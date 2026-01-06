@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- MCP SDK (preview) -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="ModelContextProtocol" />
+
+    <!-- Markdown parsing for Phase 1 -->
+    <PackageReference Include="Markdig" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Embedded documentation -->
+    <EmbeddedResource Include="Data\how_dotnet_debuggers_work.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\sharpdbg\src\SharpDbg.Infrastructure\SharpDbg.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

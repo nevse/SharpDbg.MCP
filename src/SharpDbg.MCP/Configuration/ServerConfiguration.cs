@@ -1,0 +1,119 @@
+using Microsoft.Extensions.Logging;
+
+namespace SharpDbg.MCP.Configuration;
+
+/// <summary>
+/// Configuration settings for the SharpDbg MCP Server
+/// </summary>
+public class ServerConfiguration
+{
+    /// <summary>
+    /// Log level for the server (default: Information)
+    /// Environment variable: SHARPDBG_LOG_LEVEL
+    /// </summary>
+    public LogLevel LogLevel { get; set; } = LogLevel.Information;
+
+    /// <summary>
+    /// Maximum number of concurrent debug sessions (default: 1, future enhancement)
+    /// Environment variable: SHARPDBG_MAX_SESSIONS
+    /// </summary>
+    public int MaxConcurrentSessions { get; set; } = 1;
+
+    /// <summary>
+    /// Timeout in seconds for debugger operations (default: 30)
+    /// Environment variable: SHARPDBG_OPERATION_TIMEOUT_SECONDS
+    /// </summary>
+    public int OperationTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Whether to allow attaching to processes owned by other users (default: false)
+    /// Environment variable: SHARPDBG_ALLOW_OTHER_USER_PROCESSES
+    /// </summary>
+    public bool AllowOtherUserProcesses { get; set; } = false;
+
+    /// <summary>
+    /// Expression evaluation timeout in milliseconds (default: 5000)
+    /// Environment variable: SHARPDBG_EVAL_TIMEOUT_MS
+    /// </summary>
+    public int ExpressionEvaluationTimeoutMs { get; set; } = 5000;
+
+    /// <summary>
+    /// Enable detailed diagnostic logging for troubleshooting (default: false)
+    /// Environment variable: SHARPDBG_ENABLE_DIAGNOSTICS
+    /// </summary>
+    public bool EnableDiagnostics { get; set; } = false;
+
+    /// <summary>
+    /// Server version
+    /// </summary>
+    public string Version { get; set; } = "1.0.0";
+
+    /// <summary>
+    /// Load configuration from environment variables
+    /// </summary>
+    public static ServerConfiguration LoadFromEnvironment()
+    {
+        var config = new ServerConfiguration();
+
+        // Log level
+        var logLevel = Environment.GetEnvironmentVariable("SHARPDBG_LOG_LEVEL");
+        if (Enum.TryParse<LogLevel>(logLevel, true, out var parsedLevel))
+        {
+            config.LogLevel = parsedLevel;
+        }
+
+        // Max sessions
+        var maxSessions = Environment.GetEnvironmentVariable("SHARPDBG_MAX_SESSIONS");
+        if (int.TryParse(maxSessions, out var parsedMaxSessions) && parsedMaxSessions > 0)
+        {
+            config.MaxConcurrentSessions = parsedMaxSessions;
+        }
+
+        // Operation timeout
+        var opTimeout = Environment.GetEnvironmentVariable("SHARPDBG_OPERATION_TIMEOUT_SECONDS");
+        if (int.TryParse(opTimeout, out var parsedOpTimeout) && parsedOpTimeout > 0)
+        {
+            config.OperationTimeoutSeconds = parsedOpTimeout;
+        }
+
+        // Allow other user processes
+        var allowOther = Environment.GetEnvironmentVariable("SHARPDBG_ALLOW_OTHER_USER_PROCESSES");
+        if (bool.TryParse(allowOther, out var parsedAllowOther))
+        {
+            config.AllowOtherUserProcesses = parsedAllowOther;
+        }
+
+        // Expression evaluation timeout
+        var evalTimeout = Environment.GetEnvironmentVariable("SHARPDBG_EVAL_TIMEOUT_MS");
+        if (int.TryParse(evalTimeout, out var parsedEvalTimeout) && parsedEvalTimeout > 0)
+        {
+            config.ExpressionEvaluationTimeoutMs = parsedEvalTimeout;
+        }
+
+        // Diagnostics
+        var diagnostics = Environment.GetEnvironmentVariable("SHARPDBG_ENABLE_DIAGNOSTICS");
+        if (bool.TryParse(diagnostics, out var parsedDiagnostics))
+        {
+            config.EnableDiagnostics = parsedDiagnostics;
+        }
+
+        return config;
+    }
+
+    /// <summary>
+    /// Validate configuration and return error message if invalid
+    /// </summary>
+    public string? Validate()
+    {
+        if (MaxConcurrentSessions < 1)
+            return "MaxConcurrentSessions must be at least 1";
+
+        if (OperationTimeoutSeconds < 1)
+            return "OperationTimeoutSeconds must be at least 1";
+
+        if (ExpressionEvaluationTimeoutMs < 100)
+            return "ExpressionEvaluationTimeoutMs must be at least 100ms";
+
+        return null;
+    }
+}
