@@ -5,5 +5,4 @@
   <Folder Name="/tests/">
     <Project Path="tests/SharpDbg.MCP.Tests/SharpDbg.MCP.Tests.csproj" />
   </Folder>
-  <Project Path="../sharpdbg/src/SharpDbg.Infrastructure/SharpDbg.Infrastructure.csproj" />
 </Solution>

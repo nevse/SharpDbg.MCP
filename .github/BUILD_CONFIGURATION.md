@@ -23,8 +23,9 @@ This repository uses [Central Package Management (CPM)](https://learn.microsoft.
     <!-- All package versions defined here -->
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.1" />
     <PackageVersion Include="ModelContextProtocol" Version="0.5.0-preview.1" />
-    <PackageVersion Include="Markdig" Version="0.38.0" />
-    <PackageVersion Include="MSTest" Version="4.0.1" />
+    <PackageVersion Include="SharpDbg" Version="0.1.0-preview1" />
+    <PackageVersion Include="Markdig" Version="0.44.0" />
+    <PackageVersion Include="MSTest" Version="4.0.2" />
   </ItemGroup>
 </Project>
 ```
