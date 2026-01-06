@@ -1,0 +1,120 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [ published ]
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        dotnet-version: ['10.0.x']
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ matrix.dotnet-version }}
+
+    - name: Restore dependencies
+      run: dotnet restore src/SharpDbg.MCP/SharpDbg.MCP.csproj
+
+    - name: Build
+      run: dotnet build src/SharpDbg.MCP/SharpDbg.MCP.csproj --no-restore --configuration Release
+
+    - name: Test
+      run: dotnet test tests/SharpDbg.MCP.Tests/SharpDbg.MCP.Tests.csproj --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx"
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ matrix.os }}
+        path: '**/test-results.trx'
+
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore src/SharpDbg.MCP/SharpDbg.MCP.csproj
+
+    - name: Check format
+      run: dotnet format src/SharpDbg.MCP/SharpDbg.MCP.csproj --verify-no-changes --verbosity diagnostic
+      continue-on-error: true
+
+    - name: Run code analysis
+      run: dotnet build src/SharpDbg.MCP/SharpDbg.MCP.csproj --no-restore /p:TreatWarningsAsErrors=true
+      continue-on-error: true
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+    if: github.event_name == 'release'
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore src/SharpDbg.MCP/SharpDbg.MCP.csproj
+
+    - name: Build Release
+      run: dotnet build src/SharpDbg.MCP/SharpDbg.MCP.csproj --configuration Release --no-restore
+
+    - name: Publish Linux x64
+      run: dotnet publish src/SharpDbg.MCP/SharpDbg.MCP.csproj --configuration Release --runtime linux-x64 --self-contained false --output ./publish/linux-x64
+
+    - name: Publish Windows x64
+      run: dotnet publish src/SharpDbg.MCP/SharpDbg.MCP.csproj --configuration Release --runtime win-x64 --self-contained false --output ./publish/win-x64
+
+    - name: Publish macOS x64
+      run: dotnet publish src/SharpDbg.MCP/SharpDbg.MCP.csproj --configuration Release --runtime osx-x64 --self-contained false --output ./publish/osx-x64
+
+    - name: Publish macOS ARM64
+      run: dotnet publish src/SharpDbg.MCP/SharpDbg.MCP.csproj --configuration Release --runtime osx-arm64 --self-contained false --output ./publish/osx-arm64
+
+    - name: Create archives
+      run: |
+        cd publish
+        tar -czf ../sharpdbg-mcp-linux-x64.tar.gz -C linux-x64 .
+        zip -r ../sharpdbg-mcp-win-x64.zip win-x64/*
+        tar -czf ../sharpdbg-mcp-osx-x64.tar.gz -C osx-x64 .
+        tar -czf ../sharpdbg-mcp-osx-arm64.tar.gz -C osx-arm64 .
+
+    - name: Upload Release Assets
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          sharpdbg-mcp-linux-x64.tar.gz
+          sharpdbg-mcp-win-x64.zip
+          sharpdbg-mcp-osx-x64.tar.gz
+          sharpdbg-mcp-osx-arm64.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
