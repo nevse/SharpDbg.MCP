@@ -165,6 +165,26 @@ eight. Nothing in-process can do better, since the shim dies on a thread we do n
 
 A server that attaches once per session is far less exposed than the test suite.
 
+Measured rate, all on macOS arm64 with the integration suite as it stands: 4 aborted runs in 12, and
+1 in 8 in an earlier sample - so somewhere around a fifth to a quarter of runs, which is what makes
+the macOS CI job red so often. Ubuntu and Windows have not aborted once.
+
+On CI it twice died at exactly the same point, on the seventeenth test's attach; locally the crash
+lands in different places (after 8, 16, 31, 40 and 46 tests in different runs), so the boundary is
+not a property of any one test.
+
+Things that did **not** help, so they do not need trying again:
+
+- Forcing the previous session's `CordbProcess` to finalize before the next attach
+  (`GC.Collect()` plus `WaitForPendingFinalizers()` when the debuggee is disposed): 4 aborts in 12
+  runs, no better than without it. The first 8 runs were clean, which is exactly how a 20% failure
+  rate looks if you stop measuring early.
+- Blaming the test that poisons the debugger with a disposed handle: it is two tests before the
+  boundary CI died at, but the poisoning test plus one attach after it ran 8 times without an abort.
+
+What did help, a little, was waiting after the debuggee starts before attaching
+(`DebuggeeProcess.AttachSettleTime`), which took it from three runs in six back to one in eight.
+
 **Before reporting to dotnet/runtime:** check whether it also happens on Linux and Windows, and
 reduce it to a repro that only attaches and detaches in a loop.
 
