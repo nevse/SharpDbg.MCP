@@ -60,7 +60,7 @@ class Program
 
         // Initialize tools after logging is configured
         McpTools.Initialize();
-        DebuggingTools.Initialize();
+        DebuggingTools.Initialize(config);
 
         logger.LogInformation("SharpDbg MCP Server v{Version} starting...", config.Version);
         logger.LogInformation("Configuration:");

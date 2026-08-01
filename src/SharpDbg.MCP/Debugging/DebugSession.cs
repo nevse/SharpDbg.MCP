@@ -1,5 +1,6 @@
 using SharpDbg.Infrastructure.Debugger;
 using SharpDbg.Infrastructure.Debugger.Models.Response;
+using SharpDbg.MCP.Configuration;
 using SharpDbg.MCP.Logging;
 
 namespace SharpDbg.MCP.Debugging;
@@ -9,11 +10,12 @@ namespace SharpDbg.MCP.Debugging;
 /// </summary>
 public class DebugSession : IDisposable
 {
-    private static readonly TimeSpan AttachTimeout = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan BreakpointVerificationTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
 
     private readonly int _sessionId;
+    private readonly bool _justMyCode;
+    private readonly TimeSpan _operationTimeout;
+    private readonly TimeSpan _evaluationTimeout;
     private readonly object _stateLock = new();
     private readonly Dictionary<(string FilePath, int Line), BreakpointResult> _breakpoints = new();
     private ManagedDebugger? _debugger;
@@ -49,9 +51,14 @@ public class DebugSession : IDisposable
         }
     }
 
-    public DebugSession(int sessionId)
+    public DebugSession(int sessionId, ServerConfiguration configuration)
     {
+        ArgumentNullException.ThrowIfNull(configuration);
+
         _sessionId = sessionId;
+        _justMyCode = configuration.JustMyCode;
+        _operationTimeout = TimeSpan.FromSeconds(configuration.OperationTimeoutSeconds);
+        _evaluationTimeout = TimeSpan.FromMilliseconds(configuration.ExpressionEvaluationTimeoutMs);
     }
 
     /// <summary>
@@ -92,13 +99,13 @@ public class DebugSession : IDisposable
 
         try
         {
-            debugger.Attach(processId, justMyCode: true);
+            debugger.Attach(processId, _justMyCode);
             await debugger.ConfigurationDone();
 
             // ConfigurationDone hands the attach to a fire-and-forget Task.Run, so the process is
             // still unusable when it returns. GetThreads stays empty until the process exists,
             // which makes it the cheapest signal that the attach has actually landed.
-            if (!WaitFor(() => debugger.GetThreads().Count > 0, AttachTimeout))
+            if (!WaitFor(() => debugger.GetThreads().Count > 0, _operationTimeout))
                 throw new TimeoutException($"Timed out waiting to attach to process {processId}");
 
             McpLogger.LogDebugSessionEvent(_sessionId, "Attached", $"Successfully attached to process {processId}");
@@ -278,7 +285,7 @@ public class DebugSession : IDisposable
             }
 
             return current.Verified;
-        }, BreakpointVerificationTimeout);
+        }, _operationTimeout);
 
         return current;
     }
@@ -398,7 +405,8 @@ public class DebugSession : IDisposable
         var debugger = RequireDebugger();
 
         // Call async methods outside the lock to avoid deadlocks
-        var (result, type, variablesReference) = await debugger.Evaluate(expression, frameId);
+        var (result, type, variablesReference) =
+            await debugger.Evaluate(expression, frameId).WaitAsync(_evaluationTimeout);
         return new EvaluationResult(result, type, variablesReference);
     }
 

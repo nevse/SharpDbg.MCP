@@ -18,6 +18,7 @@ public class ServerConfigurationTests
         Environment.SetEnvironmentVariable("SHARPDBG_ALLOW_OTHER_USER_PROCESSES", null);
         Environment.SetEnvironmentVariable("SHARPDBG_EVAL_TIMEOUT_MS", null);
         Environment.SetEnvironmentVariable("SHARPDBG_ENABLE_DIAGNOSTICS", null);
+        Environment.SetEnvironmentVariable("SHARPDBG_JUST_MY_CODE", null);
     }
 
     [TestCleanup]
@@ -30,6 +31,7 @@ public class ServerConfigurationTests
         Environment.SetEnvironmentVariable("SHARPDBG_ALLOW_OTHER_USER_PROCESSES", null);
         Environment.SetEnvironmentVariable("SHARPDBG_EVAL_TIMEOUT_MS", null);
         Environment.SetEnvironmentVariable("SHARPDBG_ENABLE_DIAGNOSTICS", null);
+        Environment.SetEnvironmentVariable("SHARPDBG_JUST_MY_CODE", null);
     }
 
     [TestMethod]
@@ -45,7 +47,21 @@ public class ServerConfigurationTests
         Assert.AreEqual(false, config.AllowOtherUserProcesses);
         Assert.AreEqual(5000, config.ExpressionEvaluationTimeoutMs);
         Assert.AreEqual(false, config.EnableDiagnostics);
+        Assert.IsTrue(config.JustMyCode);
         Assert.AreEqual("1.0.0", config.Version);
+    }
+
+    [TestMethod]
+    public void LoadFromEnvironment_JustMyCode_False()
+    {
+        // Arrange
+        Environment.SetEnvironmentVariable("SHARPDBG_JUST_MY_CODE", "false");
+
+        // Act
+        var config = ServerConfiguration.LoadFromEnvironment();
+
+        // Assert
+        Assert.IsFalse(config.JustMyCode);
     }
 
     [TestMethod]

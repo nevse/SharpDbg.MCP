@@ -44,6 +44,12 @@ public class ServerConfiguration
     public bool EnableDiagnostics { get; set; } = false;
 
     /// <summary>
+    /// Restrict debugging to user code, skipping framework and third-party assemblies (default: true)
+    /// Environment variable: SHARPDBG_JUST_MY_CODE
+    /// </summary>
+    public bool JustMyCode { get; set; } = true;
+
+    /// <summary>
     /// Server version
     /// </summary>
     public string Version { get; set; } = "1.0.0";
@@ -88,6 +94,13 @@ public class ServerConfiguration
         if (int.TryParse(evalTimeout, out var parsedEvalTimeout) && parsedEvalTimeout > 0)
         {
             config.ExpressionEvaluationTimeoutMs = parsedEvalTimeout;
+        }
+
+        // Just my code
+        var justMyCode = Environment.GetEnvironmentVariable("SHARPDBG_JUST_MY_CODE");
+        if (bool.TryParse(justMyCode, out var parsedJustMyCode))
+        {
+            config.JustMyCode = parsedJustMyCode;
         }
 
         // Diagnostics

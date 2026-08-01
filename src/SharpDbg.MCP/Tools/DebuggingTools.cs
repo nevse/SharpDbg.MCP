@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
+using SharpDbg.MCP.Configuration;
 using SharpDbg.MCP.Debugging;
 
 namespace SharpDbg.MCP.Tools;
@@ -11,11 +12,17 @@ namespace SharpDbg.MCP.Tools;
 [McpServerToolType]
 public static class DebuggingTools
 {
-    private static readonly Lazy<DebugSessionManager> _sessionManager = new(() => new DebugSessionManager());
+    private static ServerConfiguration _configuration = new();
+    private static readonly Lazy<DebugSessionManager> _sessionManager = new(() => new DebugSessionManager(_configuration));
     private static readonly Lazy<ProcessDiscovery> _processDiscovery = new(() => new ProcessDiscovery());
 
-    public static void Initialize()
+    public static void Initialize(ServerConfiguration configuration)
     {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        // Must be assigned before the lazy session manager is first read
+        _configuration = configuration;
+
         // Force initialization of lazy instances
         _ = _sessionManager.Value;
         _ = _processDiscovery.Value;

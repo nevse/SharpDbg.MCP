@@ -1,3 +1,5 @@
+using SharpDbg.MCP.Configuration;
+
 namespace SharpDbg.MCP.Debugging;
 
 /// <summary>
@@ -6,9 +8,16 @@ namespace SharpDbg.MCP.Debugging;
 public class DebugSessionManager : IDisposable
 {
     private readonly Dictionary<int, DebugSession> _sessions = new();
+    private readonly ServerConfiguration _configuration;
     private int _nextSessionId = 1;
     private readonly object _lock = new();
     private bool _disposed;
+
+    public DebugSessionManager(ServerConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        _configuration = configuration;
+    }
 
     /// <summary>
     /// Create a new debug session
@@ -20,8 +29,13 @@ public class DebugSessionManager : IDisposable
 
         lock (_lock)
         {
+            if (_sessions.Count >= _configuration.MaxConcurrentSessions)
+                throw new InvalidOperationException(
+                    $"Maximum number of concurrent debug sessions ({_configuration.MaxConcurrentSessions}) reached. " +
+                    "Close an existing session or raise SHARPDBG_MAX_SESSIONS.");
+
             var sessionId = _nextSessionId++;
-            var session = new DebugSession(sessionId);
+            var session = new DebugSession(sessionId, _configuration);
             _sessions[sessionId] = session;
             return session;
         }
