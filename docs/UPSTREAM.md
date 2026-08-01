@@ -4,7 +4,7 @@ Defects outside this repository that limit what this server can do. None of them
 finish ourselves, so they are kept out of the backlog; the point of this file is that the evidence is
 written down once and a fix can be verified without re-deriving it.
 
-Only #24 has been reported so far. The rest are deliberately held back until it is fixed, so we can
+Only defect 1 has been reported, as #24. The rest are deliberately held back until it is fixed, so we can
 see how the maintainer wants these handled before filing more; the drafts at the bottom are ready to
 send.
 
@@ -28,7 +28,8 @@ Two defects have no test watching them:
 
 - **4** is hidden by `DebugSession.RetryWhileModulesLoad`. To check it, look at whether
   `ManagedDebugger._modules` is still an unguarded `Dictionary`; if it is guarded, delete the retry.
-- **6** is a native crash, so it can only be observed as an occasional aborted test run.
+- **5** and **7** are races that show up as an occasional stuck or aborted test run rather than a
+  reproducible failure.
 
 ## SharpDbg (https://github.com/MattParkerDev/sharpdbg, MIT)
 
@@ -103,7 +104,32 @@ function breakpoints hit it more often because they enumerate every module for e
 **Blocks:** nothing now — `DebugSession.RetryWhileModulesLoad` retries these calls, which is safe
 only because both `SetBreakpoints` and `SetFunctionBreakpoints` replace a whole set.
 
-### 5. An exception stop says neither the type nor whether it will be handled — not reported
+### 5. A hit on a breakpoint that was just replaced freezes the debuggee — not reported
+
+`HandleBreakpoint` ends with:
+
+```csharp
+var managedBreakpoint = _breakpointManager.FindByCorBreakpoint(functionBreakpoint);
+ArgumentNullException.ThrowIfNull(managedBreakpoint, "managedBreakpoint");
+```
+
+`SetBreakpoints` deactivates a file's `ICorDebugFunctionBreakpoint` objects and drops the
+`BreakpointInfo` that owned them. A hit already in flight on one of those then finds nothing, and this
+throws on the debugger's callback thread - which never continues the process and never raises a stop.
+The debuggee is left suspended with the session still believing it runs, and only `Disconnect`
+releases it. A few lines above, an unrecognised breakpoint type is handled by continuing instead,
+which is what this path should do too.
+
+Seen once in CI on macOS, in a test that sets two breakpoints in a file, removes one, and waits for
+the other: the log shows the survivor bound and verified, then nothing for 30 seconds. The debuggee
+hits the line being replaced every 150ms, which is what makes the window reachable at all.
+
+**Blocks:** nothing outright, but every `set_breakpoint` and `remove_breakpoint` re-sends the file's
+whole set - that is forced by the replace semantics - so each call on a running debuggee is a chance
+to hit this. There is nothing safe to do here: pausing around the re-send would trade this race for a
+stop the caller did not ask for.
+
+### 6. An exception stop says neither the type nor whether it will be handled — not reported
 
 `HandleException` discards the callback's event type, so a stop cannot be classified as first-chance
 or unhandled, and the exception's type can only be read by running code in the target, which hits
@@ -114,7 +140,7 @@ what a debugger normally defaults to, and no filtering by exception type.
 
 ## .NET runtime
 
-### 6. libmscordbi segfaults while replaying attach events
+### 7. libmscordbi segfaults while replaying attach events
 
 A test run occasionally dies with `Test Run Aborted`, no failing test, and the log cut off mid-line.
 The macOS crash reports put it in the debugger shim, on its own event thread:
