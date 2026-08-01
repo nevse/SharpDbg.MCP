@@ -55,7 +55,11 @@ public class ServerConfiguration
     public bool EnableDiagnostics { get; set; } = false;
 
     /// <summary>
-    /// Restrict debugging to user code, skipping framework and third-party assemblies (default: true)
+    /// Restrict debugging to user code, skipping framework and third-party assemblies (default: true).
+    /// Leave this on. Turning it off lets a step reach code that has no symbols, at which point the
+    /// debugger tries to decompile that module to find a location - and every route through that
+    /// fails in SharpDbg 0.1.7 (see docs/UPSTREAM.md defect 6). The failure is swallowed, so the step
+    /// never completes and the debuggee stays suspended until the session is detached.
     /// Environment variable: SHARPDBG_JUST_MY_CODE
     /// </summary>
     public bool JustMyCode { get; set; } = true;
