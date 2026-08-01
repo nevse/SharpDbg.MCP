@@ -60,7 +60,7 @@ public static class DebuggingTools
             }
 
             var session = _sessionManager.Value.GetOrCreateCurrentSession();
-            session.Attach(process_id);
+            session.Attach(process_id).GetAwaiter().GetResult();
 
             var response = new
             {

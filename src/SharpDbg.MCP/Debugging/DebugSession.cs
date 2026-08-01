@@ -1,5 +1,5 @@
 using SharpDbg.Infrastructure.Debugger;
-using SharpDbg.Infrastructure.Debugger.ResponseModels;
+using SharpDbg.Infrastructure.Debugger.Models.Response;
 using SharpDbg.MCP.Logging;
 
 namespace SharpDbg.MCP.Debugging;
@@ -19,6 +19,7 @@ public class DebugSession : IDisposable
     private ManagedDebugger? _debugger;
     private int? _attachedProcessId;
     private bool _disposed;
+    private bool _isRunning;
     private string? _currentLocation;
     private string? _lastStopReason;
     private int? _lastStoppedThreadId;
@@ -56,7 +57,7 @@ public class DebugSession : IDisposable
     /// <summary>
     /// Attach to a process
     /// </summary>
-    public void Attach(int processId)
+    public async Task Attach(int processId)
     {
         ManagedDebugger debugger;
 
@@ -72,9 +73,9 @@ public class DebugSession : IDisposable
 
             debugger = new ManagedDebugger(LogMessage);
 
-            // Subscribe to debugger events. OnStopped only reports pause/exception/entry stops;
-            // breakpoint hits and completed steps arrive on OnStopped2 (which also carries the
-            // source location), so both must be handled to observe every stop.
+            // Subscribe to debugger events. OnStopped only reports pause/exception stops; breakpoint
+            // hits and completed steps arrive on OnStopped2 (which also carries the source
+            // location), so both must be handled to observe every stop.
             debugger.OnStopped += OnDebuggerStopped;
             debugger.OnStopped2 += OnDebuggerStoppedAtLocation;
             debugger.OnContinued += OnDebuggerContinued;
@@ -85,18 +86,19 @@ public class DebugSession : IDisposable
             _debugger = debugger;
             _attachedProcessId = processId;
             _lastBreakpoint = null;
+            _isRunning = true;
             ClearStopState();
         }
 
         try
         {
-            debugger.Attach(processId);
-            debugger.ConfigurationDone();
+            debugger.Attach(processId, justMyCode: true);
+            await debugger.ConfigurationDone();
 
-            // ConfigurationDone kicks the attach off on a background thread and returns before the
-            // process is available. Without waiting, a Continue or SetBreakpoint issued right after
-            // attaching is silently applied to a null process.
-            if (!WaitFor(() => debugger.IsRunning, AttachTimeout))
+            // ConfigurationDone hands the attach to a fire-and-forget Task.Run, so the process is
+            // still unusable when it returns. GetThreads stays empty until the process exists,
+            // which makes it the cheapest signal that the attach has actually landed.
+            if (!WaitFor(() => debugger.GetThreads().Count > 0, AttachTimeout))
                 throw new TimeoutException($"Timed out waiting to attach to process {processId}");
 
             McpLogger.LogDebugSessionEvent(_sessionId, "Attached", $"Successfully attached to process {processId}");
@@ -113,6 +115,7 @@ public class DebugSession : IDisposable
     {
         lock (_stateLock)
         {
+            _isRunning = false;
             _lastStoppedThreadId = threadId;
             _lastStopReason = reason;
         }
@@ -124,10 +127,17 @@ public class DebugSession : IDisposable
     /// <summary>
     /// Handles stops that carry a source location (breakpoint hits and completed steps)
     /// </summary>
-    private void OnDebuggerStoppedAtLocation(int threadId, string filePath, int line, string reason)
+    private void OnDebuggerStoppedAtLocation(
+        int threadId,
+        string filePath,
+        int line,
+        int column,
+        string reason,
+        DecompiledSourceInfo? decompiledSource)
     {
         lock (_stateLock)
         {
+            _isRunning = false;
             _lastStoppedThreadId = threadId;
             _lastStopReason = reason;
             _currentLocation = $"{filePath}:{line}";
@@ -147,6 +157,7 @@ public class DebugSession : IDisposable
     {
         lock (_stateLock)
         {
+            _isRunning = true;
             ClearStopState();
         }
 
@@ -158,6 +169,7 @@ public class DebugSession : IDisposable
     {
         lock (_stateLock)
         {
+            _isRunning = false;
             ClearStopState();
         }
 
@@ -165,13 +177,13 @@ public class DebugSession : IDisposable
         LogMessage("Process exited");
     }
 
-    private void OnDebuggerOutput(string message)
+    private void OnDebuggerOutput(string message, bool isError)
     {
         McpLogger.LogDebug("Session {SessionId} | Output: {Message}", _sessionId, message);
-        LogMessage($"Output: {message}");
+        LogMessage($"Output{(isError ? " (stderr)" : string.Empty)}: {message}");
     }
 
-    private void OnDebuggerBreakpointChanged(SharpDbg.Infrastructure.Debugger.BreakpointManager.BreakpointInfo breakpoint)
+    private void OnDebuggerBreakpointChanged(BreakpointManager.BreakpointInfo breakpoint)
     {
         lock (_stateLock)
         {
@@ -198,12 +210,8 @@ public class DebugSession : IDisposable
             if (_disposed)
                 throw new ObjectDisposedException(nameof(DebugSession));
 
-            // ManagedDebugger owns the authoritative running flag - it clears it on the ICorDebug
-            // callback thread the moment the process stops, so mirroring it here would drift.
-            var isRunning = _debugger?.IsRunning ?? false;
-
             return new ExecutionState(
-                isRunning,
+                _attachedProcessId.HasValue && _isRunning,
                 _attachedProcessId.HasValue,
                 _attachedProcessId,
                 _currentLocation,
@@ -216,7 +224,7 @@ public class DebugSession : IDisposable
     /// <summary>
     /// Set a breakpoint at a specific file and line
     /// </summary>
-    public BreakpointResult SetBreakpoint(string filePath, int line)
+    public BreakpointResult SetBreakpoint(string filePath, int line, string? condition = null)
     {
         var debugger = RequireDebugger();
 
@@ -224,7 +232,8 @@ public class DebugSession : IDisposable
 
         try
         {
-            var breakpoints = debugger.SetBreakpoints(filePath, new[] { line });
+            var request = new SharpDbgBreakpointRequest(line, condition);
+            var breakpoints = debugger.SetBreakpoints(filePath, new[] { request });
 
             if (breakpoints.Count == 0)
                 throw new InvalidOperationException("Failed to create breakpoint");
@@ -316,20 +325,14 @@ public class DebugSession : IDisposable
         var debugger = RequireDebugger();
 
         // Continuing an already-running process throws CORDBG_E_SUPERFLOUS_CONTINUE out of COM.
-        if (debugger.IsRunning)
+        if (!TryBeginResume())
         {
             McpLogger.LogDebugSessionEvent(_sessionId, "Continue", "Already running - ignored");
             return false;
         }
 
         McpLogger.LogDebugSessionEvent(_sessionId, "Continue", "Resuming execution");
-
-        lock (_stateLock)
-        {
-            ClearStopState();
-        }
-
-        debugger.Continue();
+        Resume(debugger.HandleContinueRequest);
         return true;
     }
 
@@ -342,6 +345,13 @@ public class DebugSession : IDisposable
 
         McpLogger.LogDebugSessionEvent(_sessionId, "Pause", "Breaking execution");
         debugger.Pause();
+
+        // Stop() is synchronous and raises no stop event of its own.
+        lock (_stateLock)
+        {
+            _isRunning = false;
+            _lastStopReason = "pause";
+        }
     }
 
     /// <summary>
@@ -352,8 +362,8 @@ public class DebugSession : IDisposable
         var debugger = RequireDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "StepOver", $"Thread {threadId}");
-        BeginStep(debugger);
-        debugger.StepNext(threadId);
+        BeginStep();
+        Resume(() => debugger.StepNext(threadId));
     }
 
     /// <summary>
@@ -364,8 +374,8 @@ public class DebugSession : IDisposable
         var debugger = RequireDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "StepInto", $"Thread {threadId}");
-        BeginStep(debugger);
-        debugger.StepIn(threadId);
+        BeginStep();
+        Resume(() => debugger.StepIn(threadId));
     }
 
     /// <summary>
@@ -376,8 +386,8 @@ public class DebugSession : IDisposable
         var debugger = RequireDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "StepOut", $"Thread {threadId}");
-        BeginStep(debugger);
-        debugger.StepOut(threadId);
+        BeginStep();
+        Resume(() => debugger.StepOut(threadId));
     }
 
     /// <summary>
@@ -411,7 +421,7 @@ public class DebugSession : IDisposable
     /// </summary>
     private void DetachCore()
     {
-        ManagedDebugger? debuggerToDispose;
+        ManagedDebugger? debuggerToRelease;
 
         lock (_stateLock)
         {
@@ -421,37 +431,33 @@ public class DebugSession : IDisposable
                 return;
             }
 
-            debuggerToDispose = _debugger;
+            debuggerToRelease = _debugger;
 
             // Unsubscribe from events
-            debuggerToDispose.OnStopped -= OnDebuggerStopped;
-            debuggerToDispose.OnStopped2 -= OnDebuggerStoppedAtLocation;
-            debuggerToDispose.OnContinued -= OnDebuggerContinued;
-            debuggerToDispose.OnExited -= OnDebuggerExited;
-            debuggerToDispose.OnOutput -= OnDebuggerOutput;
-            debuggerToDispose.OnBreakpointChanged -= OnDebuggerBreakpointChanged;
+            debuggerToRelease.OnStopped -= OnDebuggerStopped;
+            debuggerToRelease.OnStopped2 -= OnDebuggerStoppedAtLocation;
+            debuggerToRelease.OnContinued -= OnDebuggerContinued;
+            debuggerToRelease.OnExited -= OnDebuggerExited;
+            debuggerToRelease.OnOutput -= OnDebuggerOutput;
+            debuggerToRelease.OnBreakpointChanged -= OnDebuggerBreakpointChanged;
 
             _debugger = null;
             _attachedProcessId = null;
+            _isRunning = false;
             _breakpoints.Clear();
             _lastBreakpoint = null;
             ClearStopState();
         }
 
-        // Detach and dispose outside the lock to avoid potential deadlocks.
+        // Release outside the lock to avoid potential deadlocks. Without Disconnect the debuggee is
+        // never let go by ICorDebug and stays suspended for the rest of its life.
         try
         {
-            // Dispose only tears down our own state - without Disconnect the debuggee is never
-            // released by ICorDebug and stays suspended for the rest of its life.
-            debuggerToDispose.Disconnect(terminateDebuggee: false);
+            debuggerToRelease.Disconnect(terminateDebuggee: false);
         }
         catch (Exception ex)
         {
             McpLogger.LogDebugSessionError(_sessionId, "Detach", ex);
-        }
-        finally
-        {
-            debuggerToDispose.Dispose();
         }
     }
 
@@ -476,19 +482,48 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
+    /// Marks the process as running before it is actually resumed, so that a stop event arriving
+    /// during the resume call is not overwritten by this thread afterwards.
+    /// </summary>
+    private bool TryBeginResume()
+    {
+        lock (_stateLock)
+        {
+            if (_isRunning)
+                return false;
+
+            ClearStopState();
+            _isRunning = true;
+            return true;
+        }
+    }
+
+    private void Resume(Action resume)
+    {
+        try
+        {
+            resume();
+        }
+        catch
+        {
+            lock (_stateLock)
+            {
+                _isRunning = false;
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Stepping requires a stopped process with an active frame; stepping a running one
     /// surfaces an opaque COM failure instead of a usable error.
     /// </summary>
-    private void BeginStep(ManagedDebugger debugger)
+    private void BeginStep()
     {
-        if (debugger.IsRunning)
+        if (!TryBeginResume())
             throw new InvalidOperationException(
                 "Process is running. It must be stopped at a breakpoint before stepping.");
-
-        lock (_stateLock)
-        {
-            ClearStopState();
-        }
     }
 
     private void ClearStopState()
