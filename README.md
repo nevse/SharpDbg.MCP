@@ -251,6 +251,26 @@ Wait for the debuggee to stop, instead of calling `get_process_status` in a loop
 process was still running when the wait expired, which is not an error — call again to keep waiting.
 A `stop_reason` of `exited` means the process is gone and cannot be stepped or continued.
 
+#### `set_exception_break_mode`
+Control what happens when the debuggee throws.
+
+**Parameters:**
+- `mode` (string): `always` (default) or `never`
+
+**Returns:** The mode in effect, plus how many exception stops have been seen and how many were
+resumed automatically.
+
+The debugger stops on **every first-chance exception**, including ones the program catches itself, so
+a program that uses exceptions routinely suspends constantly. `always` keeps those stops:
+`stop_reason` is `exception`, and `get_stack_trace` on `stopped_thread_id` shows where it was thrown
+(exception stops carry no `current_location`). `never` resumes them automatically, which is what you
+want when hunting something else in a program whose own exceptions are noise — breakpoints still
+stop normally.
+
+There is no mode for unhandled exceptions only, and no filtering by exception type. The debugger
+reports neither the type nor whether the program will handle the exception without running code in
+the target, which currently leaves the process unable to resume.
+
 #### `set_breakpoint`
 Set a breakpoint at a specific file and line number, or update the conditions of an existing one.
 
@@ -373,17 +393,30 @@ Evaluate a C# expression in the context of a stack frame.
 
 **Returns:** Evaluation result with value, type, and variables reference.
 
+> **Warning:** an expression that has to run code in the target — a property getter, `ToString()`,
+> any method call — currently leaves the debuggee needing a second `continue_execution` before it
+> really resumes, and after several such evaluations it may not resume at all. The first
+> `continue_execution` still reports `resumed: true`, so the process looks running while it is
+> suspended. Reading fields through `get_variables` and `expand_variable` does not have this problem.
+> This is a SharpDbg defect, related to
+> [MattParkerDev/sharpdbg#24](https://github.com/MattParkerDev/sharpdbg/issues/24).
+
 ### Limitations & Planned Features
 
 **Current Limitations (Require Upstream SharpDbg Changes):**
-- **Expanding an evaluated member freezes the debuggee** - see the warning under `expand_variable`
+- **Running code in the target suspends the debuggee** - any evaluation of a property, `ToString()`
+  or method call, and expanding a member that needs one; see the warnings under
+  `evaluate_expression` and `expand_variable`
   ([MattParkerDev/sharpdbg#24](https://github.com/MattParkerDev/sharpdbg/issues/24))
+- **Break on unhandled exceptions only** - a stop does not say whether the program will handle the
+  exception, so exception breaks can only be all or nothing (`set_exception_break_mode`)
+- **Filtering exception breaks by type** - reading the exception's type needs code to run in the
+  target, which hits the defect above
 - **Expanding an evaluation result** - `evaluate_expression` never returns a usable
   `variables_reference`, so only variables from `get_variables` can be walked
 - **Watch Expressions** - Continuous monitoring of expression values
 
 **Not Implemented Yet:**
-- **Break on exception** - stopping when an exception is thrown
 - **Function breakpoints** - breaking on a method name rather than a file and line
 - Multi-session support (debug multiple processes simultaneously)
 - Hot reload support (modify code while debugging)

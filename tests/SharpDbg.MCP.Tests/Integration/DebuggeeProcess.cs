@@ -23,7 +23,10 @@ internal sealed class DebuggeeProcess : IDisposable
     /// </summary>
     public int OutputLines => Volatile.Read(ref _outputLines);
 
-    public static DebuggeeProcess Start()
+    /// <summary>
+    /// Starts the debuggee. Pass "--throw" to have it throw and catch an exception every iteration.
+    /// </summary>
+    public static DebuggeeProcess Start(params string[] arguments)
     {
         var startInfo = new ProcessStartInfo("dotnet")
         {
@@ -32,6 +35,9 @@ internal sealed class DebuggeeProcess : IDisposable
             UseShellExecute = false,
         };
         startInfo.ArgumentList.Add(TestPaths.TestAppAssembly);
+
+        foreach (var argument in arguments)
+            startInfo.ArgumentList.Add(argument);
 
         var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Failed to start the debuggee process");
