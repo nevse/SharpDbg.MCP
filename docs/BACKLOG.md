@@ -26,12 +26,6 @@ through `GetOrCreateCurrentSession()`. Either add `session_id` to the tool signa
 it, or delete the manager and be honest about supporting one session.
 **Effort: M**
 
-### `AllowOtherUserProcesses` is never enforced
-The setting is parsed and validated but nothing reads it, so the server will happily attach to any
-process the user can reach. Either enforce an owner check in `ProcessDiscovery` or remove the
-setting — a security option that does nothing is worse than no option.
-**Effort: M**
-
 ### Process discovery is heuristic
 `ProcessDiscovery.IsDotNetProcess` matches on process name (`dotnet`, `testhost`), so
 self-contained apps are invisible. The diagnostic IPC channel that `dotnet-trace ps` uses is exact.

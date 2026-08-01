@@ -51,7 +51,8 @@ public static class McpTools
         return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
     }
 
-    [McpServerTool, Description("Explain a specific ICorDebug interface or debugging concept")]
+    // Name pinned: the SDK would turn ExplainICorDebugInterface into explain_i_cor_debug_interface
+    [McpServerTool(Name = "explain_icordebug_interface")]
     public static string ExplainICorDebugInterface(string interface_name)
     {
         var results = _loader.Value.Search(interface_name);

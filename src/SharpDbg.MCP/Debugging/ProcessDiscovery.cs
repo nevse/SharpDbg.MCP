@@ -28,7 +28,8 @@ public class ProcessDiscovery
                         dotnetProcesses.Add(new ProcessInfo(
                             process.Id,
                             process.ProcessName,
-                            GetMainModulePath(process)));
+                            GetMainModulePath(process),
+                            ProcessOwnership.Of(process.Id)));
                     }
                 }
                 catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException)
@@ -117,7 +118,8 @@ public class ProcessDiscovery
             return new ProcessInfo(
                 process.Id,
                 process.ProcessName,
-                GetMainModulePath(process));
+                GetMainModulePath(process),
+                ProcessOwnership.Of(processId));
         }
         catch (ArgumentException)
         {
@@ -152,4 +154,5 @@ public class ProcessDiscovery
 public record ProcessInfo(
     int ProcessId,
     string ProcessName,
-    string? MainModule);
+    string? MainModule,
+    ProcessOwnership.Ownership Owner = ProcessOwnership.Ownership.Unknown);
