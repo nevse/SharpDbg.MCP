@@ -16,12 +16,6 @@ suite is occasionally killed by a crash inside `libmscordbi` during attach.
 
 ## P2 — capabilities and robustness
 
-### Process discovery is heuristic
-`ProcessDiscovery.IsDotNetProcess` matches on process name (`dotnet`, `testhost`), so
-self-contained apps are invisible. The diagnostic IPC channel that `dotnet-trace ps` uses is exact.
-`ListDotNetProcesses` also calls `GetProcessById` again for every process it already enumerated.
-**Effort: M**
-
 ## P3 — distribution
 
 ### Ship on NuGet and run via `dnx`
