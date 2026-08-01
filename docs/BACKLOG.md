@@ -5,13 +5,6 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 ## P0 — broken or untrustworthy today
 
-### Integration tests do not run in CI
-`.github/workflows/ci.yml` filters out `TestCategory=Integration` because attaching a real
-ICorDebug debugger to a child process is not reliably permitted on hosted runners. Until this is
-resolved the regression net only exists on developer machines. Investigate whether the Ubuntu
-runner allows the attach (ptrace scope, container capabilities); if it does, add a dedicated job.
-**Effort: M**
-
 ### `Test1.cs` is an empty placeholder
 Delete it. It inflates the test count without asserting anything.
 **Effort: S**

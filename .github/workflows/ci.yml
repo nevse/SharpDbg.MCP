@@ -31,8 +31,7 @@ jobs:
     - name: Build
       run: dotnet build --no-restore --configuration Release
 
-    # Integration tests attach a real ICorDebug debugger to a child process, which hosted
-    # runners do not reliably permit. Run them locally with ./scripts/test-integration.sh
+    # Integration tests run in their own job so they are not executed twice
     - name: Test
       run: dotnet test --no-build --configuration Release --verbosity normal --filter "TestCategory!=Integration" --logger "trx;LogFileName=test-results.trx"
 
@@ -42,6 +41,33 @@ jobs:
       with:
         name: test-results-${{ matrix.os }}
         path: '**/test-results.trx'
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      # One platform failing should not hide the others
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --no-restore --configuration Release
+
+    - name: Integration tests
+      run: dotnet test --no-build --configuration Release --filter "TestCategory=Integration" --verbosity normal
 
   lint:
     name: Code Quality
@@ -93,7 +119,7 @@ jobs:
   package:
     name: Package
     runs-on: ubuntu-latest
-    needs: [build-and-test]
+    needs: [build-and-test, integration-tests]
     if: github.event_name == 'release'
 
     steps:
