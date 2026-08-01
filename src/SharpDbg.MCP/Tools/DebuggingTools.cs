@@ -83,12 +83,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -142,12 +137,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -185,12 +175,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -256,12 +241,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -318,12 +298,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -361,12 +336,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -409,12 +379,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -461,12 +426,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -504,12 +464,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -554,12 +509,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -610,12 +560,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -651,20 +596,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            // 0x80131C01 here means the debugger is holding a disposed handle, which an earlier
-            // ExpandVariable on an evaluated member can cause. It never recovers on retry.
-            var poisoned = ex.Message.Contains("0x80131C01", StringComparison.Ordinal);
-
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message,
-                hint = poisoned
-                    ? "The debug session cannot resume this process any more. Retrying will not " +
-                      "help; use DetachFromProcess to release it, then attach again."
-                    : null
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -697,12 +629,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -738,12 +665,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -779,12 +701,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -820,12 +737,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 
@@ -873,12 +785,7 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
-            var errorResponse = new
-            {
-                success = false,
-                error = ex.Message
-            };
-            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+            return DebuggerErrors.ErrorResponse(ex);
         }
     }
 }
