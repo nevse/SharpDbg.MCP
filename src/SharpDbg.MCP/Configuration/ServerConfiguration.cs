@@ -38,6 +38,17 @@ public class ServerConfiguration
     public int ExpressionEvaluationTimeoutMs { get; set; } = 5000;
 
     /// <summary>
+    /// How long to wait for a breakpoint to bind before reporting it as unverified (default: 2000).
+    /// A breakpoint set right after attaching can be answered unverified because the target
+    /// module's symbols have not been processed yet; it binds on the module-load callback, which
+    /// measures around 30ms. Waiting for that is what keeps callers from seeing a breakpoint that
+    /// is about to become active, but the wait has to stay short, because a breakpoint that can
+    /// never bind costs exactly this long.
+    /// Environment variable: SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS
+    /// </summary>
+    public int BreakpointBindTimeoutMs { get; set; } = 2000;
+
+    /// <summary>
     /// Enable detailed diagnostic logging for troubleshooting (default: false)
     /// Environment variable: SHARPDBG_ENABLE_DIAGNOSTICS
     /// </summary>
@@ -96,6 +107,13 @@ public class ServerConfiguration
             config.ExpressionEvaluationTimeoutMs = parsedEvalTimeout;
         }
 
+        // Breakpoint bind timeout
+        var bindTimeout = Environment.GetEnvironmentVariable("SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS");
+        if (int.TryParse(bindTimeout, out var parsedBindTimeout) && parsedBindTimeout > 0)
+        {
+            config.BreakpointBindTimeoutMs = parsedBindTimeout;
+        }
+
         // Just my code
         var justMyCode = Environment.GetEnvironmentVariable("SHARPDBG_JUST_MY_CODE");
         if (bool.TryParse(justMyCode, out var parsedJustMyCode))
@@ -126,6 +144,9 @@ public class ServerConfiguration
 
         if (ExpressionEvaluationTimeoutMs < 100)
             return "ExpressionEvaluationTimeoutMs must be at least 100ms";
+
+        if (BreakpointBindTimeoutMs < 100)
+            return "BreakpointBindTimeoutMs must be at least 100ms";
 
         return null;
     }

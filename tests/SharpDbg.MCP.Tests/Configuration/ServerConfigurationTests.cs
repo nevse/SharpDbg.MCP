@@ -18,6 +18,7 @@ public class ServerConfigurationTests
         Environment.SetEnvironmentVariable("SHARPDBG_OPERATION_TIMEOUT_SECONDS", null);
         Environment.SetEnvironmentVariable("SHARPDBG_ALLOW_OTHER_USER_PROCESSES", null);
         Environment.SetEnvironmentVariable("SHARPDBG_EVAL_TIMEOUT_MS", null);
+        Environment.SetEnvironmentVariable("SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS", null);
         Environment.SetEnvironmentVariable("SHARPDBG_ENABLE_DIAGNOSTICS", null);
         Environment.SetEnvironmentVariable("SHARPDBG_JUST_MY_CODE", null);
     }
@@ -31,6 +32,7 @@ public class ServerConfigurationTests
         Environment.SetEnvironmentVariable("SHARPDBG_OPERATION_TIMEOUT_SECONDS", null);
         Environment.SetEnvironmentVariable("SHARPDBG_ALLOW_OTHER_USER_PROCESSES", null);
         Environment.SetEnvironmentVariable("SHARPDBG_EVAL_TIMEOUT_MS", null);
+        Environment.SetEnvironmentVariable("SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS", null);
         Environment.SetEnvironmentVariable("SHARPDBG_ENABLE_DIAGNOSTICS", null);
         Environment.SetEnvironmentVariable("SHARPDBG_JUST_MY_CODE", null);
     }
@@ -47,6 +49,7 @@ public class ServerConfigurationTests
         Assert.AreEqual(30, config.OperationTimeoutSeconds);
         Assert.IsFalse(config.AllowOtherUserProcesses);
         Assert.AreEqual(5000, config.ExpressionEvaluationTimeoutMs);
+        Assert.AreEqual(2000, config.BreakpointBindTimeoutMs);
         Assert.IsFalse(config.EnableDiagnostics);
         Assert.IsTrue(config.JustMyCode);
         Assert.AreEqual("1.0.0", config.Version);
@@ -196,6 +199,19 @@ public class ServerConfigurationTests
     }
 
     [TestMethod]
+    public void LoadFromEnvironment_BreakpointBindTimeout_ParsesCorrectly()
+    {
+        // Arrange
+        Environment.SetEnvironmentVariable("SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS", "750");
+
+        // Act
+        var config = ServerConfiguration.LoadFromEnvironment();
+
+        // Assert
+        Assert.AreEqual(750, config.BreakpointBindTimeoutMs);
+    }
+
+    [TestMethod]
     public void LoadFromEnvironment_EnableDiagnostics_True()
     {
         // Arrange
@@ -217,6 +233,7 @@ public class ServerConfigurationTests
         Environment.SetEnvironmentVariable("SHARPDBG_OPERATION_TIMEOUT_SECONDS", "120");
         Environment.SetEnvironmentVariable("SHARPDBG_ALLOW_OTHER_USER_PROCESSES", "true");
         Environment.SetEnvironmentVariable("SHARPDBG_EVAL_TIMEOUT_MS", "15000");
+        Environment.SetEnvironmentVariable("SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS", "900");
         Environment.SetEnvironmentVariable("SHARPDBG_ENABLE_DIAGNOSTICS", "true");
 
         // Act
@@ -228,6 +245,7 @@ public class ServerConfigurationTests
         Assert.AreEqual(120, config.OperationTimeoutSeconds);
         Assert.IsTrue(config.AllowOtherUserProcesses);
         Assert.AreEqual(15000, config.ExpressionEvaluationTimeoutMs);
+        Assert.AreEqual(900, config.BreakpointBindTimeoutMs);
         Assert.IsTrue(config.EnableDiagnostics);
     }
 
@@ -303,6 +321,20 @@ public class ServerConfigurationTests
         // Assert
         Assert.IsNotNull(result);
         Assert.Contains("ExpressionEvaluationTimeoutMs", result);
+    }
+
+    [TestMethod]
+    public void Validate_BreakpointBindTimeoutTooLow_ReturnsError()
+    {
+        // Arrange
+        var config = new ServerConfiguration { BreakpointBindTimeoutMs = 50 };
+
+        // Act
+        var result = config.Validate();
+
+        // Assert
+        Assert.IsNotNull(result);
+        Assert.Contains("BreakpointBindTimeoutMs", result);
     }
 
     [TestMethod]
