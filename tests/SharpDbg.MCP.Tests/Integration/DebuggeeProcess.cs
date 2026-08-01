@@ -8,6 +8,8 @@ namespace SharpDbg.MCP.Tests.Integration;
 /// </summary>
 internal sealed class DebuggeeProcess : IDisposable
 {
+    private static readonly TimeSpan AttachSettleTime = TimeSpan.FromMilliseconds(500);
+
     private readonly Process _process;
     private int _outputLines;
 
@@ -56,6 +58,15 @@ internal sealed class DebuggeeProcess : IDisposable
         process.BeginErrorReadLine();
 
         debuggee.WaitUntilRunning();
+
+        // Let the debuggee finish its startup burst of assembly loads before a debugger attaches.
+        // The shim crashes in ShimProcess::QueueFakeAttachEvents while replaying the synthetic
+        // module load events for an attach (see the backlog), and attaching into that burst makes it
+        // measurably more likely: without this wait, three of six full runs died, with it one of
+        // six, which is the same rate as before these tests existed. It is a way to be hit less
+        // often, not a fix.
+        Thread.Sleep(AttachSettleTime);
+
         return debuggee;
     }
 

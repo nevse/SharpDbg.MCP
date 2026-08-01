@@ -74,10 +74,20 @@ have to be registered with the variable manager the way scope members already ar
 
 ## P2 — capabilities the current package already supports
 
-### Function breakpoints
-0.1.7 supports breakpoints bound by function rather than file/line
-(`BreakpointInfo.IsFunctionBreakpoint`). Useful when the caller knows a method name but not a path.
-**Effort: M**
+### Breakpoint calls race with module loading
+`ManagedDebugger` keeps its loaded modules in a plain `Dictionary` that the module-load callback
+writes to on the debugger's own thread, while binding enumerates it on the caller's thread. A
+breakpoint set while the debuggee is still loading assemblies therefore fails with
+`InvalidOperationException: Collection was modified; enumeration operation may not execute`, thrown
+from `Dictionary.ValueCollection.Enumerator.MoveNext()` inside `SetFunctionBreakpoints`. Line
+breakpoints reach the same enumeration through `TryBindBreakpoint`, so both are exposed; function
+breakpoints hit it more often because they enumerate every module for every request.
+
+`DebugSession.RetryWhileModulesLoad` retries such a call, which is safe only because both
+`SetBreakpoints` and `SetFunctionBreakpoints` replace a whole set. The real fix is upstream: guard
+`_modules` or hand out a snapshot. Worth reporting - it is a different defect from
+https://github.com/MattParkerDev/sharpdbg/issues/24.
+**Effort: S upstream, mitigated here**
 
 ### Exception stops cannot be narrowed down
 `set_exception_break_mode` can only turn first-chance exception stops on or off wholesale. Two
@@ -116,13 +126,19 @@ attach, on its own event thread - the same replay whose timing the breakpoint bi
 around. Nothing of ours is on the stack.
 
 Not caused by any recent change: reproduced at 26b4626 as well, roughly one run in six on macOS
-arm64 with .NET 10.0.0, while the integration tests attach and detach around twenty times in a
+arm64 with .NET 10.0.0, while the integration tests attach and detach around thirty times in a
 single test host. A long-lived server that attaches repeatedly could hit it too, but one attach per
 session makes it far less likely there.
 
-Next steps would be to check whether it also happens on Linux and Windows, to see whether spacing
-out attaches or forcing a GC between sessions changes the rate, and to report it to dotnet/runtime
-with a reduced repro. Until then it will show up as an occasional red CI run that passes on re-run.
+How often it happens depends on how soon after the debuggee starts the debugger attaches. Adding the
+function breakpoint tests took it to three runs in six; waiting half a second after the debuggee is
+up, before attaching, brought it back to one in eight. `DebuggeeProcess.AttachSettleTime` is that
+wait. Nothing in-process can do better - the shim dies on its own thread, so there is no exception to
+catch.
+
+Next steps would be to check whether it also happens on Linux and Windows, and to report it to
+dotnet/runtime with a reduced repro. Until then it shows up as an occasional aborted run - the giveaway
+is `Test Run Aborted` with the log cut off mid-line and no failing test - that passes on re-run.
 **Effort: M to investigate**
 
 

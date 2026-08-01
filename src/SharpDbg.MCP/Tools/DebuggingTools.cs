@@ -302,7 +302,70 @@ public static class DebuggingTools
         }
     }
 
-    [McpServerTool, Description("Remove a previously set breakpoint by its ID")]
+    [McpServerTool, Description(
+        "Set a breakpoint on a method by name, for when the method is known but the file and line " +
+        "are not. " +
+        "function_name accepts 'Method', 'Type.Method' or 'Namespace.Type.Method'; the type part " +
+        "matches by suffix, so 'Program.Work' matches 'MyApp.Program.Work'. Every method matching " +
+        "the name binds, which includes overloads and same-named methods in several assemblies - " +
+        "bound_locations reports each place it bound, so check it to see what was actually caught. " +
+        "Narrow it with a parameter list, 'Work(int, string)', where C# keywords, nullables and " +
+        "generics are understood ('int', 'string?', 'List<int>'), or by generic arity, 'Work<T>'. " +
+        "condition and hit_condition work as they do for set_breakpoint, and re-sending resets the " +
+        "hit counts of all function breakpoints. " +
+        "Like line breakpoints this needs portable PDBs for the target; verified=false with 'No " +
+        "functions matching' means the name matched nothing in the modules loaded so far, and it " +
+        "will bind by itself if a later assembly contains it. " +
+        "Remove it with remove_breakpoint, the same as a line breakpoint.")]
+    public static string SetFunctionBreakpoint(string function_name, string? condition = null, string? hit_condition = null)
+    {
+        try
+        {
+            InputValidation.ValidateFunctionName(function_name);
+            InputValidation.ValidateHitCondition(hit_condition);
+
+            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+
+            if (!session.IsAttached)
+            {
+                var notAttachedResponse = new
+                {
+                    success = false,
+                    error = "Not attached to a process. Use attach_to_process first."
+                };
+                return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            var result = session.SetFunctionBreakpoint(function_name, condition, hit_condition);
+
+            var response = new
+            {
+                success = true,
+                breakpoint = new
+                {
+                    id = result.Id,
+                    function_name = result.FunctionName,
+                    verified = result.Verified,
+                    bound_locations = result.BoundLocations
+                        .Select(l => new { file_path = l.FilePath, line = l.Line })
+                        .ToList(),
+                    condition = result.Condition,
+                    hit_condition = result.HitCondition,
+                    message = result.Message
+                }
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return DebuggerErrors.ErrorResponse(ex);
+        }
+    }
+
+    [McpServerTool, Description(
+        "Remove a previously set breakpoint by its ID, whether it was set with set_breakpoint or " +
+        "set_function_breakpoint")]
     public static string RemoveBreakpoint(int breakpoint_id)
     {
         try
@@ -358,17 +421,28 @@ public static class DebuggingTools
             }
 
             var breakpoints = session.ListBreakpoints();
+            var functionBreakpoints = session.ListFunctionBreakpoints();
 
             var response = new
             {
                 success = true,
-                count = breakpoints.Count,
+                count = breakpoints.Count + functionBreakpoints.Count,
                 breakpoints = breakpoints.Select(b => new
                 {
                     id = b.Id,
                     file_path = b.FilePath,
                     line = b.Line,
                     verified = b.Verified,
+                    condition = b.Condition,
+                    hit_condition = b.HitCondition,
+                    message = b.Message
+                }).ToList(),
+                function_breakpoints = functionBreakpoints.Select(b => new
+                {
+                    id = b.Id,
+                    function_name = b.FunctionName,
+                    verified = b.Verified,
+                    bound_locations = b.BoundLocations.Select(l => new { file_path = l.FilePath, line = l.Line }).ToList(),
                     condition = b.Condition,
                     hit_condition = b.HitCondition,
                     message = b.Message
