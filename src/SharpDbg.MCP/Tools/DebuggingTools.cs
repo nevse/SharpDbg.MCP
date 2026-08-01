@@ -62,8 +62,12 @@ public static class DebuggingTools
         _ => "unknown"
     };
 
-    [McpServerTool, Description("Attach debugger to a .NET process by process ID")]
-    public static string AttachToProcess(int process_id)
+    [McpServerTool, Description(
+        "Attach the debugger to a .NET process by process ID. Attaching while another process is " +
+        "already being debugged opens a second session instead of failing, up to " +
+        "SHARPDBG_MAX_SESSIONS (one by default). The session_id in the response is what the other " +
+        "tools take to say which process they mean; it can be omitted while only one session is open.")]
+    public static string AttachToProcess(int process_id, int? session_id = null)
     {
         try
         {
@@ -98,7 +102,9 @@ public static class DebuggingTools
                 return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
             }
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            // A second attach opens a second session rather than failing, up to
+            // SHARPDBG_MAX_SESSIONS
+            var session = _sessionManager.Value.AcquireForAttach(session_id);
             session.Attach(process_id).GetAwaiter().GetResult();
 
             var response = new
@@ -125,13 +131,13 @@ public static class DebuggingTools
         "loop. stopped=false means the process was still running when the wait expired, which is " +
         "not an error - call again to keep waiting. stop_reason 'exited' means the process is gone " +
         "and cannot be stepped or continued.")]
-    public static string WaitForStop(int timeout_ms = 10000)
+    public static string WaitForStop(int timeout_ms = 10000, int? session_id = null)
     {
         try
         {
             InputValidation.ValidateWaitTimeout(timeout_ms);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -148,6 +154,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 stopped = state != null,
                 timeout_ms,
                 current_location = state?.CurrentLocation,
@@ -182,13 +189,13 @@ public static class DebuggingTools
         "There is no mode for unhandled exceptions only, and no filtering by exception type: the " +
         "debugger reports neither the type nor whether the program will handle it without running " +
         "code in the target, which currently leaves the process unable to resume.")]
-    public static string SetExceptionBreakMode(string mode)
+    public static string SetExceptionBreakMode(string mode, int? session_id = null)
     {
         try
         {
             var parsed = InputValidation.ParseExceptionBreakMode(mode);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
             session.ExceptionBreakMode = parsed;
 
             var state = session.GetExecutionState();
@@ -196,6 +203,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 mode = parsed.ToString().ToLowerInvariant(),
                 exceptions_seen = state.ExceptionsSeen,
                 exceptions_ignored = state.ExceptionsIgnored
@@ -209,44 +217,124 @@ public static class DebuggingTools
         }
     }
 
-    [McpServerTool, Description("Get the status of the current debug session")]
-    public static string GetProcessStatus()
-    {
-        var session = _sessionManager.Value.GetOrCreateCurrentSession();
-        var state = session.GetExecutionState();
-
-        var response = new
-        {
-            session_id = session.SessionId,
-            is_attached = state.IsAttached,
-            process_id = state.ProcessId,
-            is_running = state.IsRunning,
-            is_stopped = state.IsAttached && !state.IsRunning,
-            current_location = state.CurrentLocation,
-            stop_reason = state.StopReason,
-            exception_break_mode = session.ExceptionBreakMode.ToString().ToLowerInvariant(),
-            exceptions_seen = state.ExceptionsSeen,
-            exceptions_ignored = state.ExceptionsIgnored,
-            // The thread to pass to GetStackTrace/StepOver/StepInto/StepOut while stopped
-            stopped_thread_id = state.StoppedThreadId,
-            last_breakpoint = state.LastBreakpoint == null ? null : new
-            {
-                id = state.LastBreakpoint.BreakpointId,
-                file_path = state.LastBreakpoint.FilePath,
-                line = state.LastBreakpoint.Line,
-                thread_id = state.LastBreakpoint.ThreadId
-            }
-        };
-
-        return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
-    }
-
-    [McpServerTool, Description("Detach debugger from the current process")]
-    public static string DetachFromProcess()
+    [McpServerTool, Description(
+        "Get the status of a debug session. Omit session_id unless more than one session is open, in " +
+        "which case list_sessions shows which is which.")]
+    public static string GetProcessStatus(int? session_id = null)
     {
         try
         {
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
+            var state = session.GetExecutionState();
+
+            var response = new
+            {
+                session_id = session.SessionId,
+                is_attached = state.IsAttached,
+                process_id = state.ProcessId,
+                is_running = state.IsRunning,
+                is_stopped = state.IsAttached && !state.IsRunning,
+                current_location = state.CurrentLocation,
+                stop_reason = state.StopReason,
+                exception_break_mode = session.ExceptionBreakMode.ToString().ToLowerInvariant(),
+                exceptions_seen = state.ExceptionsSeen,
+                exceptions_ignored = state.ExceptionsIgnored,
+                // The thread to pass to get_stack_trace/step_over/step_into/step_out while stopped
+                stopped_thread_id = state.StoppedThreadId,
+                last_breakpoint = state.LastBreakpoint == null ? null : new
+                {
+                    id = state.LastBreakpoint.BreakpointId,
+                    file_path = state.LastBreakpoint.FilePath,
+                    line = state.LastBreakpoint.Line,
+                    thread_id = state.LastBreakpoint.ThreadId
+                }
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return DebuggerErrors.ErrorResponse(ex);
+        }
+    }
+
+    [McpServerTool, Description(
+        "List the open debug sessions, which is how you find the session_id to pass to the other " +
+        "tools. A session is created by attach_to_process and lives until close_session or detach.")]
+    public static string ListSessions()
+    {
+        try
+        {
+            var sessions = _sessionManager.Value.GetAllSessions();
+
+            var response = new
+            {
+                success = true,
+                count = sessions.Count,
+                max_sessions = _configuration.MaxConcurrentSessions,
+                sessions = sessions.Select(s =>
+                {
+                    var state = s.GetExecutionState();
+
+                    return new
+                    {
+                        session_id = s.SessionId,
+                        process_id = state.ProcessId,
+                        is_attached = state.IsAttached,
+                        is_running = state.IsRunning,
+                        stop_reason = state.StopReason,
+                        current_location = state.CurrentLocation
+                    };
+                }).OrderBy(s => s.session_id).ToList()
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return DebuggerErrors.ErrorResponse(ex);
+        }
+    }
+
+    [McpServerTool, Description(
+        "Close a debug session, detaching from its process if it is still attached. Use this to free " +
+        "a slot when SHARPDBG_MAX_SESSIONS has been reached.")]
+    public static string CloseSession(int session_id)
+    {
+        try
+        {
+            // Resolve first so closing an id that does not exist says so, rather than quietly doing
+            // nothing
+            var session = _sessionManager.Value.Resolve(session_id);
+            var processId = session.AttachedProcessId;
+
+            _sessionManager.Value.CloseSession(session_id);
+
+            var response = new
+            {
+                success = true,
+                session_id,
+                message = processId.HasValue
+                    ? $"Session {session_id} closed and detached from process {processId.Value}"
+                    : $"Session {session_id} closed"
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return DebuggerErrors.ErrorResponse(ex);
+        }
+    }
+
+    [McpServerTool, Description(
+        "Detach the debugger from a session's process. The session stays open and unattached, so the " +
+        "next attach_to_process reuses it rather than taking another slot; close_session removes it.")]
+    public static string DetachFromProcess(int? session_id = null)
+    {
+        try
+        {
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -264,6 +352,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 message = $"Successfully detached from process {processId}"
             };
 
@@ -286,7 +375,7 @@ public static class DebuggingTools
         "verified=false means the breakpoint is not bound: usually the path or line does not exist " +
         "in the target, but a breakpoint in an assembly that has not been loaded yet binds by " +
         "itself once it loads, so check list_breakpoints again rather than setting it repeatedly.")]
-    public static string SetBreakpoint(string file_path, int line, string? condition = null, string? hit_condition = null)
+    public static string SetBreakpoint(string file_path, int line, string? condition = null, string? hit_condition = null, int? session_id = null)
     {
         try
         {
@@ -295,7 +384,7 @@ public static class DebuggingTools
             InputValidation.ValidateLineNumber(line);
             InputValidation.ValidateHitCondition(hit_condition);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -312,6 +401,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 breakpoint = new
                 {
                     id = result.Id,
@@ -347,14 +437,14 @@ public static class DebuggingTools
         "functions matching' means the name matched nothing in the modules loaded so far, and it " +
         "will bind by itself if a later assembly contains it. " +
         "Remove it with remove_breakpoint, the same as a line breakpoint.")]
-    public static string SetFunctionBreakpoint(string function_name, string? condition = null, string? hit_condition = null)
+    public static string SetFunctionBreakpoint(string function_name, string? condition = null, string? hit_condition = null, int? session_id = null)
     {
         try
         {
             InputValidation.ValidateFunctionName(function_name);
             InputValidation.ValidateHitCondition(hit_condition);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -371,6 +461,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 breakpoint = new
                 {
                     id = result.Id,
@@ -396,13 +487,13 @@ public static class DebuggingTools
     [McpServerTool, Description(
         "Remove a previously set breakpoint by its ID, whether it was set with set_breakpoint or " +
         "set_function_breakpoint")]
-    public static string RemoveBreakpoint(int breakpoint_id)
+    public static string RemoveBreakpoint(int breakpoint_id, int? session_id = null)
     {
         try
         {
             InputValidation.ValidateBreakpointId(breakpoint_id);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -434,11 +525,11 @@ public static class DebuggingTools
     }
 
     [McpServerTool, Description("List all breakpoints currently set in the debug session")]
-    public static string ListBreakpoints()
+    public static string ListBreakpoints(int? session_id = null)
     {
         try
         {
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -456,6 +547,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 count = breakpoints.Count + functionBreakpoints.Count,
                 breakpoints = breakpoints.Select(b => new
                 {
@@ -488,14 +580,14 @@ public static class DebuggingTools
     }
 
     [McpServerTool, Description("Get the call stack for a specific thread ID")]
-    public static string GetStackTrace(int thread_id)
+    public static string GetStackTrace(int thread_id, int? session_id = null)
     {
         try
         {
             // Validate input
             InputValidation.ValidateThreadId(thread_id);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -512,6 +604,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 thread_id,
                 frame_count = stackFrames.Count,
                 frames = stackFrames.Select(f => new
@@ -535,11 +628,11 @@ public static class DebuggingTools
     }
 
     [McpServerTool, Description("Get all threads in the attached process")]
-    public static string GetThreads()
+    public static string GetThreads(int? session_id = null)
     {
         try
         {
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -556,6 +649,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 thread_count = threads.Count,
                 threads = threads.Select(t => new
                 {
@@ -573,14 +667,14 @@ public static class DebuggingTools
     }
 
     [McpServerTool, Description("Get local variables for a specific stack frame ID")]
-    public static string GetVariables(int frame_id)
+    public static string GetVariables(int frame_id, int? session_id = null)
     {
         try
         {
             // Validate input
             InputValidation.ValidateFrameId(frame_id);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -598,6 +692,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 frame_id,
                 variable_count = variables.Count,
                 variables = variables.Select(v => new
@@ -625,13 +720,13 @@ public static class DebuggingTools
         "EqualityContract, or anything else of type RuntimeType - currently leaves the debugger " +
         "with a disposed handle, after which continue_execution always fails and the process stays " +
         "suspended. Only detach_from_process releases it. Prefer expanding your own data.")]
-    public static string ExpandVariable(int variables_reference)
+    public static string ExpandVariable(int variables_reference, int? session_id = null)
     {
         try
         {
             InputValidation.ValidateVariablesReference(variables_reference);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -649,6 +744,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 variables_reference,
                 member_count = members.Count,
                 members = members.Select(v => new
@@ -669,11 +765,11 @@ public static class DebuggingTools
     }
 
     [McpServerTool, Description("Continue execution until the next breakpoint or process exit")]
-    public static string ContinueExecution()
+    public static string ContinueExecution(int? session_id = null)
     {
         try
         {
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -690,6 +786,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 resumed,
                 message = resumed
                     ? "Process execution resumed. It will run until a breakpoint is hit or the process exits."
@@ -705,11 +802,11 @@ public static class DebuggingTools
     }
 
     [McpServerTool, Description("Pause execution (break into debugger at current location)")]
-    public static string PauseExecution()
+    public static string PauseExecution(int? session_id = null)
     {
         try
         {
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -726,6 +823,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 message = "Process execution paused. Use get_process_status to check current location."
             };
 
@@ -738,14 +836,14 @@ public static class DebuggingTools
     }
 
     [McpServerTool, Description("Step over the current line (execute and stop at next line in same method)")]
-    public static string StepOver(int thread_id)
+    public static string StepOver(int thread_id, int? session_id = null)
     {
         try
         {
             // Validate input
             InputValidation.ValidateThreadId(thread_id);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -762,6 +860,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 message = $"Stepping over on thread {thread_id}. Execution will stop at the next line."
             };
 
@@ -774,14 +873,14 @@ public static class DebuggingTools
     }
 
     [McpServerTool, Description("Step into the current line (enter called methods)")]
-    public static string StepInto(int thread_id)
+    public static string StepInto(int thread_id, int? session_id = null)
     {
         try
         {
             // Validate input
             InputValidation.ValidateThreadId(thread_id);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -798,6 +897,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 message = $"Stepping into on thread {thread_id}. Execution will stop at the first line of any called method."
             };
 
@@ -810,14 +910,14 @@ public static class DebuggingTools
     }
 
     [McpServerTool, Description("Step out of the current method (execute until return)")]
-    public static string StepOut(int thread_id)
+    public static string StepOut(int thread_id, int? session_id = null)
     {
         try
         {
             // Validate input
             InputValidation.ValidateThreadId(thread_id);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -834,6 +934,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 message = $"Stepping out on thread {thread_id}. Execution will stop after returning from the current method."
             };
 
@@ -853,7 +954,7 @@ public static class DebuggingTools
         "continue_execution still reports resumed=true, so the process looks running while it is " +
         "suspended. This is a SharpDbg defect. Reading fields through get_variables and " +
         "expand_variable does not have this problem.")]
-    public static string EvaluateExpression(string expression, int frame_id)
+    public static string EvaluateExpression(string expression, int frame_id, int? session_id = null)
     {
         try
         {
@@ -861,7 +962,7 @@ public static class DebuggingTools
             InputValidation.ValidateExpression(expression);
             InputValidation.ValidateFrameId(frame_id);
 
-            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            var session = _sessionManager.Value.Resolve(session_id);
 
             if (!session.IsAttached)
             {
@@ -879,6 +980,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
+                session_id = session.SessionId,
                 expression,
                 result = result.Result,
                 type = result.Type,

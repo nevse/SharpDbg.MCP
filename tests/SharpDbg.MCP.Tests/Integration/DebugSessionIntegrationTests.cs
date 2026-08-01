@@ -489,6 +489,64 @@ public sealed class DebugSessionIntegrationTests
     }
 
     /// <summary>
+    /// Two processes debugged at once, which is what SHARPDBG_MAX_SESSIONS allows. What matters is
+    /// that the sessions do not leak into each other: separate breakpoints, and resuming one leaves
+    /// the other where it was.
+    /// </summary>
+    [TestMethod]
+    public async Task TwoSessions_DebugTwoProcessesIndependently()
+    {
+        var firstLine = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+        var secondLine = TestPaths.FindMarkerLine("STEP-TARGET");
+
+        using var debuggeeA = DebuggeeProcess.Start();
+        using var debuggeeB = DebuggeeProcess.Start();
+        using var manager = new DebugSessionManager(new ServerConfiguration { MaxConcurrentSessions = 2 });
+
+        var sessionA = manager.AcquireForAttach(null);
+        await sessionA.Attach(debuggeeA.ProcessId);
+
+        // Attaching again while the first session is busy has to open a second one
+        var sessionB = manager.AcquireForAttach(null);
+        await sessionB.Attach(debuggeeB.ProcessId);
+
+        Assert.AreNotEqual(sessionA.SessionId, sessionB.SessionId);
+        Assert.HasCount(2, manager.GetAllSessions());
+        Assert.AreEqual(debuggeeA.ProcessId, sessionA.AttachedProcessId);
+        Assert.AreEqual(debuggeeB.ProcessId, sessionB.AttachedProcessId);
+
+        var breakpointA = sessionA.SetBreakpoint(TestPaths.TestAppSource, firstLine);
+        var breakpointB = sessionB.SetBreakpoint(TestPaths.TestAppSource, secondLine);
+        Assert.IsTrue(breakpointA.Verified, $"A: {breakpointA.Message}");
+        Assert.IsTrue(breakpointB.Verified, $"B: {breakpointB.Message}");
+
+        // Each session only knows its own breakpoint
+        Assert.HasCount(1, sessionA.ListBreakpoints());
+        Assert.HasCount(1, sessionB.ListBreakpoints());
+
+        var stateA = WaitForStop(sessionA);
+        var stateB = WaitForStop(sessionB);
+        Assert.AreEqual($"{TestPaths.TestAppSource}:{firstLine}", stateA.CurrentLocation);
+        Assert.AreEqual($"{TestPaths.TestAppSource}:{secondLine}", stateB.CurrentLocation);
+
+        // Resuming one must leave the other suspended
+        sessionA.RemoveBreakpoint(breakpointA.Id);
+        Assert.IsTrue(sessionA.Continue());
+
+        Assert.IsGreaterThan(0, debuggeeA.CountOutputDuring(TimeSpan.FromSeconds(2)), "A did not resume");
+        Assert.AreEqual(0, debuggeeB.CountOutputDuring(ObservationWindow), "B resumed with A");
+        Assert.IsFalse(sessionB.GetExecutionState().IsRunning);
+
+        // Closing a session releases its debuggee and frees the slot
+        manager.CloseSession(sessionB.SessionId);
+        Assert.HasCount(1, manager.GetAllSessions());
+        Assert.IsGreaterThan(
+            0,
+            debuggeeB.CountOutputDuring(TimeSpan.FromSeconds(2)),
+            "Closing the session left its debuggee suspended");
+    }
+
+    /// <summary>
     /// A function breakpoint is the case where the caller knows the method but not the file and
     /// line, so what matters is that the name binds and that the stop reports the id and the
     /// location the caller never supplied.
