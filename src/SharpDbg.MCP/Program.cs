@@ -6,8 +6,9 @@ using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 using SharpDbg.MCP.Configuration;
+using SharpDbg.MCP.Debugging;
+using SharpDbg.MCP.Documentation;
 using SharpDbg.MCP.Logging;
-using SharpDbg.MCP.Tools;
 
 namespace SharpDbg.MCP;
 
@@ -31,6 +32,14 @@ class Program
 
         // Register configuration as singleton
         builder.Services.AddSingleton(config);
+
+        // The SDK builds a tool class per call, so what the tools hold has to outlive the call:
+        // sessions would otherwise be created and dropped one tool call at a time.
+        builder.Services.AddSingleton<DebugSessionManager>();
+        builder.Services.AddSingleton<ProcessDiscovery>();
+        builder.Services.AddSingleton<DocumentationLoader>();
+        builder.Services.AddSingleton<ConceptIndex>();
+        builder.Services.AddSingleton<FlowDiagramProvider>();
 
         // Configure logging to stderr (required for MCP stdio transport)
         builder.Logging.ClearProviders();
@@ -60,9 +69,10 @@ class Program
         var logger = loggerFactory.CreateLogger("SharpDbg.MCP");
         McpLogger.Initialize(logger);
 
-        // Initialize tools after logging is configured
-        McpTools.Initialize();
-        DebuggingTools.Initialize(config);
+        // Build the documentation index up front rather than on the first search, so a cold call is
+        // not the one that pays for loading it
+        _ = host.Services.GetRequiredService<ConceptIndex>();
+        _ = host.Services.GetRequiredService<FlowDiagramProvider>();
 
         logger.LogInformation("SharpDbg MCP Server v{Version} starting...", config.Version);
         logger.LogInformation("Configuration:");

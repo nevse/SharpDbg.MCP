@@ -22,12 +22,6 @@ self-contained apps are invisible. The diagnostic IPC channel that `dotnet-trace
 `ListDotNetProcesses` also calls `GetProcessById` again for every process it already enumerated.
 **Effort: M**
 
-### Tools are static, which blocks testing
-`DebuggingTools` is a static class with `Lazy` singletons even though `Program` already builds a DI
-container. Instance tools with injected dependencies would let the tool layer be tested directly
-instead of only through `DebugSession`.
-**Effort: M**
-
 ## P3 — distribution
 
 ### Ship on NuGet and run via `dnx`
