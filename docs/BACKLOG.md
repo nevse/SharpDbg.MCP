@@ -5,12 +5,16 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 ## P0 — broken or untrustworthy today
 
-### CI lint job is red
-`dotnet format --verify-no-changes` fails on four files that predate any recent work:
-missing final newline in `tests/SharpDbg.MCP.Tests/MSTestSettings.cs`,
-`tests/SharpDbg.MCP.Tests/Test1.cs`, `tests/SharpDbg.MCP.Tests/Tools/InputValidationTests.cs`,
-and import ordering in `src/SharpDbg.MCP/Tools/McpTools.cs`.
-A permanently failing lint job trains everyone to ignore CI.
+### `dotnet format` disagrees with CI depending on the local SDK
+There is no `global.json`, so the SDK used locally is whatever the developer has installed. On
+10.0.100 `dotnet format --verify-no-changes` reports 24 violations across 16 files - almost all
+`FINALNEWLINE: Delete 1 characters`, because it enforces the repository's
+`insert_final_newline = false` literally. CI runs 10.0.302, which does not, so the same command is
+green there. A lint command whose result depends on the developer's machine is worse than no lint.
+
+Pin the SDK with a `global.json`, and while doing so reconsider `insert_final_newline = false` in
+`.editorconfig`: every file in the repository actually ends with a newline, so the setting
+contradicts the code it governs.
 **Effort: S**
 
 ### Integration tests do not run in CI
