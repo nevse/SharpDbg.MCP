@@ -151,8 +151,27 @@ The server can be configured using environment variables. Add them to your Claud
 | `SHARPDBG_ALLOW_OTHER_USER_PROCESSES` | Allow attaching to processes not owned by the current user, including ones whose owner cannot be determined | `false` | `true`, `false` |
 | `SHARPDBG_EVAL_TIMEOUT_MS` | Expression evaluation timeout in milliseconds | `5000` | ≥ 100 |
 | `SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS` | How long to wait for a breakpoint to bind before reporting it as unverified | `2000` | ≥ 100 |
-| `SHARPDBG_JUST_MY_CODE` | Restrict debugging to user code, skipping framework and third-party assemblies | `true` | `true`, `false` |
+| `SHARPDBG_JUST_MY_CODE` | Restrict debugging to user code, skipping framework and third-party assemblies. **Leave this on** — see below | `true` | `true`, `false` |
 | `SHARPDBG_ENABLE_DIAGNOSTICS` | Enable detailed diagnostic logging | `false` | `true`, `false` |
+
+### Do not turn off Just My Code
+
+`SHARPDBG_JUST_MY_CODE=false` currently freezes the debuggee, and it is worth knowing why before
+reaching for it.
+
+With Just My Code on, a step never leaves your own code. With it off, a step can land in a module that
+has no symbols — the framework, or any assembly shipped without a PDB — and the debugger then tries to
+decompile that module to work out where it stopped. Every route through that decompilation fails in
+SharpDbg 0.1.7: the decompiler is not a declared dependency of the package, decompiling
+`System.Private.CoreLib` throws, and an assembly without a PDB that still counts as user code is
+refused outright. The failure is caught and logged, after which the step never completes and nothing
+is reported, so the process stays suspended and only `detach_from_process` releases it. A half-written
+PDB is also left in `%LOCALAPPDATA%/Temp/SharpIdeSymbolCache`, which makes every later step fail the
+same way until that directory is deleted.
+
+The details are in [docs/UPSTREAM.md](docs/UPSTREAM.md) defect 6, along with what changes here once it
+is fixed upstream. Until then, stopping in code without symbols reports no location at all — which is
+a limitation, not a hang.
 
 ### Examples
 
