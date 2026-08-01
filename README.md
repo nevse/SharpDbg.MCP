@@ -94,6 +94,8 @@ The server can be configured using environment variables. Add them to your Claud
 | `SHARPDBG_OPERATION_TIMEOUT_SECONDS` | Timeout for debugging operations | `30` | Positive integer |
 | `SHARPDBG_ALLOW_OTHER_USER_PROCESSES` | Allow attaching to processes owned by other users | `false` | `true`, `false` |
 | `SHARPDBG_EVAL_TIMEOUT_MS` | Expression evaluation timeout in milliseconds | `5000` | ≥ 100 |
+| `SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS` | How long to wait for a breakpoint to bind before reporting it as unverified | `2000` | ≥ 100 |
+| `SHARPDBG_JUST_MY_CODE` | Restrict debugging to user code, skipping framework and third-party assemblies | `true` | `true`, `false` |
 | `SHARPDBG_ENABLE_DIAGNOSTICS` | Enable detailed diagnostic logging | `false` | `true`, `false` |
 
 ### Examples

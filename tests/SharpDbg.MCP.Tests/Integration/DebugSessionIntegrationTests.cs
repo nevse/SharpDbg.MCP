@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using SharpDbg.MCP.Configuration;
 using SharpDbg.MCP.Debugging;
 using SharpDbg.MCP.Tools;
@@ -484,6 +486,39 @@ public sealed class DebugSessionIntegrationTests
             0,
             debuggee.CountOutputDuring(ObservationWindow),
             "Debuggee stayed suspended after detach");
+    }
+
+    /// <summary>
+    /// Regression: a breakpoint set right after attaching can be answered unverified because the
+    /// target module's symbols are not processed yet, and it binds a moment later on the
+    /// module-load callback. SetBreakpoint waits for that, but the wait used to be bounded by the
+    /// 30 second operation timeout, so a breakpoint that could never bind - a path the target does
+    /// not contain - stalled the caller for the full 30 seconds before reporting it.
+    /// </summary>
+    [TestMethod]
+    public async Task SetBreakpoint_OnAPathTheTargetDoesNotContain_ReportsUnverifiedWithinTheBindTimeout()
+    {
+        var bindTimeout = TimeSpan.FromMilliseconds(500);
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = new DebugSession(
+            1,
+            new ServerConfiguration { BreakpointBindTimeoutMs = (int)bindTimeout.TotalMilliseconds });
+
+        await session.Attach(debuggee.ProcessId);
+
+        var elapsed = Stopwatch.StartNew();
+        var result = session.SetBreakpoint(Path.Combine(Path.GetTempPath(), "NotPartOfTheApp.cs"), 3);
+        elapsed.Stop();
+
+        Assert.IsFalse(result.Verified, "A path the target does not contain cannot bind");
+        Assert.IsNotNull(result.Message, "The caller needs to know why the breakpoint is unverified");
+
+        // Bounded by the configured bind timeout rather than by the operation timeout
+        Assert.IsLessThan(bindTimeout * 6, elapsed.Elapsed, "SetBreakpoint stalled well past the bind timeout");
+
+        // And the wait did happen - a pending breakpoint gets its chance to bind
+        Assert.IsGreaterThan(bindTimeout / 2, elapsed.Elapsed, "SetBreakpoint did not wait for the breakpoint to bind");
     }
 
     /// <summary>

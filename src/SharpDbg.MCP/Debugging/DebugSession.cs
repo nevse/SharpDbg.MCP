@@ -20,6 +20,7 @@ public class DebugSession : IDisposable
     private readonly bool _justMyCode;
     private readonly TimeSpan _operationTimeout;
     private readonly TimeSpan _evaluationTimeout;
+    private readonly TimeSpan _breakpointBindTimeout;
     private readonly object _stateLock = new();
     // Session-owned breakpoint ids. BreakpointManager reassigns its own ids every time a file's
     // breakpoints are re-sent, so they cannot be handed out as stable references.
@@ -66,6 +67,7 @@ public class DebugSession : IDisposable
         _justMyCode = configuration.JustMyCode;
         _operationTimeout = TimeSpan.FromSeconds(configuration.OperationTimeoutSeconds);
         _evaluationTimeout = TimeSpan.FromMilliseconds(configuration.ExpressionEvaluationTimeoutMs);
+        _breakpointBindTimeout = TimeSpan.FromMilliseconds(configuration.BreakpointBindTimeoutMs);
     }
 
     /// <summary>
@@ -399,6 +401,12 @@ public class DebugSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// Waits for a pending breakpoint to bind on the module-load callback, which is what makes a
+    /// breakpoint set immediately after attaching come back verified. The wait is deliberately
+    /// short: a breakpoint that can never bind - a path the target does not contain, most often a
+    /// typo - has no event coming and costs the full timeout before it is reported.
+    /// </summary>
     private BreakpointResult WaitForVerification(int breakpointId)
     {
         BreakpointResult? current = null;
@@ -414,7 +422,7 @@ public class DebugSession : IDisposable
             }
 
             return current.Verified;
-        }, _operationTimeout);
+        }, _breakpointBindTimeout);
 
         return current ?? throw new InvalidOperationException("Breakpoint disappeared while being set");
     }

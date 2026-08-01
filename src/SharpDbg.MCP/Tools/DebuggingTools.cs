@@ -167,7 +167,10 @@ public static class DebuggingTools
         "or '%5' (every 5th hit). Hit counts include hits where condition was false, and are reset " +
         "whenever any breakpoint in the same file is added, changed or removed. " +
         "Calling this again for the same file and line replaces both conditions, so omitting one " +
-        "clears it.")]
+        "clears it. " +
+        "verified=false means the breakpoint is not bound: usually the path or line does not exist " +
+        "in the target, but a breakpoint in an assembly that has not been loaded yet binds by " +
+        "itself once it loads, so check list_breakpoints again rather than setting it repeatedly.")]
     public static string SetBreakpoint(string file_path, int line, string? condition = null, string? hit_condition = null)
     {
         try
