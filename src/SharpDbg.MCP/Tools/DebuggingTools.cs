@@ -113,7 +113,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -246,7 +246,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -295,7 +295,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -308,7 +308,7 @@ public static class DebuggingTools
                 breakpoint_id,
                 message = removed
                     ? $"Breakpoint {breakpoint_id} removed"
-                    : $"No breakpoint with ID {breakpoint_id} is set. Use ListBreakpoints to see the current ones."
+                    : $"No breakpoint with ID {breakpoint_id} is set. Use list_breakpoints to see the current ones."
             };
 
             return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
@@ -336,7 +336,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -387,7 +387,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -436,7 +436,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -482,7 +482,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -519,12 +519,12 @@ public static class DebuggingTools
 
     [McpServerTool, Description(
         "Expand a variables_reference into its members, which may themselves carry references to " +
-        "expand further. References come from GetVariables and from this tool; EvaluateExpression " +
+        "expand further. References come from get_variables and from this tool; evaluate_expression " +
         "does not currently return one. Expand while still stopped. " +
         "WARNING: expanding a member whose value has to be evaluated in the process - a record's " +
         "EqualityContract, or anything else of type RuntimeType - currently leaves the debugger " +
-        "with a disposed handle, after which ContinueExecution always fails and the process stays " +
-        "suspended. Only DetachFromProcess releases it. Prefer expanding your own data.")]
+        "with a disposed handle, after which continue_execution always fails and the process stays " +
+        "suspended. Only detach_from_process releases it. Prefer expanding your own data.")]
     public static string ExpandVariable(int variables_reference)
     {
         try
@@ -538,7 +538,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -585,7 +585,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -598,7 +598,7 @@ public static class DebuggingTools
                 resumed,
                 message = resumed
                     ? "Process execution resumed. It will run until a breakpoint is hit or the process exits."
-                    : "Process was already running; nothing to resume. Use GetProcessStatus to check whether it has stopped."
+                    : "Process was already running; nothing to resume. Use get_process_status to check whether it has stopped."
             };
 
             return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
@@ -634,7 +634,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -644,7 +644,7 @@ public static class DebuggingTools
             var response = new
             {
                 success = true,
-                message = "Process execution paused. Use GetProcessStatus to check current location."
+                message = "Process execution paused. Use get_process_status to check current location."
             };
 
             return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
@@ -675,7 +675,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -716,7 +716,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -757,7 +757,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -799,7 +799,7 @@ public static class DebuggingTools
                 var notAttachedResponse = new
                 {
                     success = false,
-                    error = "Not attached to a process. Use AttachToProcess first."
+                    error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
