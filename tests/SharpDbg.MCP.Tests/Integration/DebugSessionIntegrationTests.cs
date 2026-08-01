@@ -739,6 +739,10 @@ public sealed class DebugSessionIntegrationTests
         Assert.IsTrue(state.IsRunning, $"Session reports stopped: reason={state.StopReason}");
         Assert.IsGreaterThan(0, state.ExceptionsSeen, "The debuggee did throw, so the stops must have been counted");
         Assert.IsGreaterThan(0, state.ExceptionsIgnored);
+
+        // An ignored exception must never be visible as a stop, not even briefly: this used to be
+        // published and then taken back, and a caller could catch it in between
+        Assert.AreNotEqual("exception", state.StopReason);
     }
 
     /// <summary>
