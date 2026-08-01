@@ -38,6 +38,17 @@ public static class InputValidation
             throw new ArgumentException("File path cannot be empty", nameof(filePath));
     }
 
+    /// <summary>
+    /// Validates a function breakpoint name. Only emptiness is checked here: the pattern grammar is
+    /// the debugger's, and it reports a bad pattern as an unverified breakpoint with the reason,
+    /// which is more useful than a second opinion from here.
+    /// </summary>
+    public static void ValidateFunctionName(string functionName)
+    {
+        if (string.IsNullOrWhiteSpace(functionName))
+            throw new ArgumentException("Function name cannot be empty", nameof(functionName));
+    }
+
     public static void ValidateLineNumber(int line)
     {
         if (line <= 0)

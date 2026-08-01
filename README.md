@@ -291,21 +291,42 @@ in the target — see [Breakpoints need portable PDBs](#breakpoints-need-portabl
 breakpoint in an assembly that has not been loaded yet binds by itself once it loads, so check
 `list_breakpoints` again rather than setting it repeatedly.
 
-#### `remove_breakpoint`
-Remove a previously set breakpoint.
+#### `set_function_breakpoint`
+Set a breakpoint on a method by name, for when the method is known but the file and line are not.
 
 **Parameters:**
-- `breakpoint_id` (int): ID returned by `set_breakpoint`
+- `function_name` (string): `Method`, `Type.Method` or `Namespace.Type.Method`
+- `condition` (string, optional): as for `set_breakpoint`
+- `hit_condition` (string, optional): as for `set_breakpoint`
+
+**Returns:** Breakpoint information including ID, verification status, and `bound_locations`.
+
+The type part matches by suffix, so `Program.Work` matches `MyApp.Program.Work`. **Every** method
+matching the name binds, which includes overloads and same-named methods in several assemblies —
+`bound_locations` reports each place it bound, so check it to see what was actually caught. Narrow it
+with a parameter list, `Work(int, string)`, where C# keywords, nullables and generics are understood
+(`int`, `string?`, `List<int>`), or by generic arity, `Work<T>`.
+
+Like line breakpoints this needs portable PDBs. `verified: false` with `No functions matching` means
+the name matched nothing in the modules loaded so far, and it will bind by itself if a later assembly
+contains it. Re-sending resets the hit counts of all function breakpoints.
+
+#### `remove_breakpoint`
+Remove a previously set breakpoint, of either kind.
+
+**Parameters:**
+- `breakpoint_id` (int): ID returned by `set_breakpoint` or `set_function_breakpoint`
 
 **Returns:** Success/error response. Removing a breakpoint resets the hit counts of the other
-breakpoints in the same file.
+breakpoints in the same file, or of all function breakpoints.
 
 #### `list_breakpoints`
 List every breakpoint set in this session, with its current verification status.
 
 **Parameters:** None
 
-**Returns:** Array of breakpoints with ID, file, line, verification status, and conditions.
+**Returns:** `breakpoints`, with ID, file, line, verification status and conditions, and
+`function_breakpoints`, with ID, name, verification status, `bound_locations` and conditions.
 
 #### `get_threads`
 Get all threads in the attached process.
@@ -417,7 +438,6 @@ Evaluate a C# expression in the context of a stack frame.
 - **Watch Expressions** - Continuous monitoring of expression values
 
 **Not Implemented Yet:**
-- **Function breakpoints** - breaking on a method name rather than a file and line
 - Multi-session support (debug multiple processes simultaneously)
 - Hot reload support (modify code while debugging)
 - Data breakpoints (break when memory changes)

@@ -32,6 +32,10 @@ public class DebugSession : IDisposable
     // Session-owned breakpoint ids. BreakpointManager reassigns its own ids every time a file's
     // breakpoints are re-sent, so they cannot be handed out as stable references.
     private readonly Dictionary<int, TrackedBreakpoint> _breakpoints = new();
+    // Function breakpoints live in their own set upstream too: SetFunctionBreakpoints replaces only
+    // those, and SetBreakpoints only the file's. Ids are still handed out from one counter, so a
+    // caller can pass any id to RemoveBreakpoint without tracking which kind it was.
+    private readonly Dictionary<int, TrackedFunctionBreakpoint> _functionBreakpoints = new();
     private int _nextBreakpointId = 1;
     private ManagedDebugger? _debugger;
     private int? _attachedProcessId;
@@ -251,9 +255,9 @@ public class DebugSession : IDisposable
             if (reason == "breakpoint")
             {
                 // The stop reports the line the PDB resolved to, which is not necessarily the
-                // line that was requested.
-                var tracked = FindByLocation(filePath, line);
-                _lastBreakpoint = new BreakpointHitInfo(tracked?.Id ?? 0, filePath, line, threadId);
+                // line that was requested, and for a function breakpoint was never requested.
+                _lastBreakpoint = new BreakpointHitInfo(
+                    FindIdByLocation(filePath, line) ?? 0, filePath, line, threadId);
             }
         }
 
@@ -297,16 +301,28 @@ public class DebugSession : IDisposable
 
     private void OnDebuggerBreakpointChanged(BreakpointManager.BreakpointInfo breakpoint)
     {
+        // A function breakpoint has no requested location to match on, so it is found by name
+        var describedAs = breakpoint.FunctionName ?? $"{breakpoint.FilePath}:{breakpoint.Line}";
+
         lock (_stateLock)
         {
-            var tracked = FindByLocation(breakpoint.FilePath, breakpoint.Line);
-            if (tracked != null)
-                ApplyDebuggerState(tracked, breakpoint);
+            if (breakpoint.FunctionName != null)
+            {
+                var trackedFunction = FindByFunctionName(breakpoint.FunctionName);
+                if (trackedFunction != null)
+                    ApplyDebuggerState(trackedFunction, breakpoint);
+            }
+            else
+            {
+                var tracked = FindByLocation(breakpoint.FilePath, breakpoint.Line);
+                if (tracked != null)
+                    ApplyDebuggerState(tracked, breakpoint);
+            }
         }
 
         McpLogger.LogDebugSessionEvent(_sessionId, "BreakpointChanged",
-            $"{breakpoint.FilePath}:{breakpoint.Line} (verified={breakpoint.Verified})");
-        LogMessage($"Breakpoint changed: {breakpoint.FilePath}:{breakpoint.Line} (verified={breakpoint.Verified})");
+            $"{describedAs} (verified={breakpoint.Verified})");
+        LogMessage($"Breakpoint changed: {describedAs} (verified={breakpoint.Verified})");
     }
 
     /// <summary>
@@ -412,7 +428,91 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Remove a breakpoint by its session id. Returns false when no such breakpoint is set.
+    /// Set a breakpoint on every method matching a name, or update the conditions of an existing
+    /// one. Useful when the method is known but the file and line are not. Note that re-sending the
+    /// function breakpoints resets their hit counts, because ManagedDebugger.SetFunctionBreakpoints
+    /// recreates all of them.
+    /// </summary>
+    public FunctionBreakpointResult SetFunctionBreakpoint(
+        string functionName,
+        string? condition = null,
+        string? hitCondition = null)
+    {
+        var debugger = RequireDebugger();
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "SetFunctionBreakpoint", functionName);
+
+        int id;
+        var isNew = false;
+        string? previousCondition = null;
+        string? previousHitCondition = null;
+
+        lock (_stateLock)
+        {
+            var existing = FindByFunctionName(functionName);
+
+            if (existing != null)
+            {
+                id = existing.Id;
+                previousCondition = existing.Condition;
+                previousHitCondition = existing.HitCondition;
+                existing.Condition = condition;
+                existing.HitCondition = hitCondition;
+            }
+            else
+            {
+                isNew = true;
+                id = _nextBreakpointId++;
+                _functionBreakpoints[id] = new TrackedFunctionBreakpoint(id, functionName)
+                {
+                    Condition = condition,
+                    HitCondition = hitCondition
+                };
+            }
+        }
+
+        try
+        {
+            ReapplyFunctionBreakpoints(debugger);
+        }
+        catch (Exception ex)
+        {
+            McpLogger.LogDebugSessionError(_sessionId, "SetFunctionBreakpoint", ex);
+
+            lock (_stateLock)
+            {
+                if (isNew)
+                {
+                    _functionBreakpoints.Remove(id);
+                }
+                else if (_functionBreakpoints.TryGetValue(id, out var reverted))
+                {
+                    reverted.Condition = previousCondition;
+                    reverted.HitCondition = previousHitCondition;
+                }
+            }
+
+            throw;
+        }
+
+        var result = WaitForBinding(
+            () =>
+            {
+                lock (_stateLock)
+                    return _functionBreakpoints.TryGetValue(id, out var tracked) ? tracked.ToResult() : null;
+            },
+            r => r.Verified);
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "FunctionBreakpointSet",
+            $"ID {result.Id} on {result.FunctionName} (verified={result.Verified}, " +
+            $"bound to {result.BoundLocations.Count} location(s))");
+
+        return result;
+    }
+
+    /// <summary>
+    /// Remove a breakpoint by its session id, of either kind. Returns false when no such breakpoint
+    /// is set.
     /// </summary>
     public bool RemoveBreakpoint(int breakpointId)
     {
@@ -423,7 +523,7 @@ public class DebugSession : IDisposable
         lock (_stateLock)
         {
             if (!_breakpoints.Remove(breakpointId, out removed))
-                return false;
+                return RemoveFunctionBreakpoint(debugger, breakpointId);
         }
 
         McpLogger.LogDebugSessionEvent(_sessionId, "RemoveBreakpoint",
@@ -448,8 +548,40 @@ public class DebugSession : IDisposable
         return true;
     }
 
+    private bool RemoveFunctionBreakpoint(ManagedDebugger debugger, int breakpointId)
+    {
+        TrackedFunctionBreakpoint? removed;
+
+        lock (_stateLock)
+        {
+            if (!_functionBreakpoints.Remove(breakpointId, out removed))
+                return false;
+        }
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "RemoveBreakpoint",
+            $"ID {breakpointId} on {removed!.FunctionName}");
+
+        try
+        {
+            ReapplyFunctionBreakpoints(debugger);
+        }
+        catch (Exception ex)
+        {
+            McpLogger.LogDebugSessionError(_sessionId, "RemoveBreakpoint", ex);
+
+            lock (_stateLock)
+            {
+                _functionBreakpoints[removed.Id] = removed;
+            }
+
+            throw;
+        }
+
+        return true;
+    }
+
     /// <summary>
-    /// All breakpoints currently set in this session
+    /// All file and line breakpoints currently set in this session
     /// </summary>
     public List<BreakpointResult> ListBreakpoints()
     {
@@ -461,6 +593,23 @@ public class DebugSession : IDisposable
             return _breakpoints.Values
                 .OrderBy(b => b.FilePath, PathComparer)
                 .ThenBy(b => b.Line)
+                .Select(b => b.ToResult())
+                .ToList();
+        }
+    }
+
+    /// <summary>
+    /// All function breakpoints currently set in this session
+    /// </summary>
+    public List<FunctionBreakpointResult> ListFunctionBreakpoints()
+    {
+        lock (_stateLock)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(DebugSession));
+
+            return _functionBreakpoints.Values
+                .OrderBy(b => b.Id)
                 .Select(b => b.ToResult())
                 .ToList();
         }
@@ -487,7 +636,7 @@ public class DebugSession : IDisposable
             .Select(b => new SharpDbgBreakpointRequest(b.Line, b.Condition, b.HitCondition))
             .ToArray();
 
-        var applied = debugger.SetBreakpoints(filePath, requests);
+        var applied = RetryWhileModulesLoad(() => debugger.SetBreakpoints(filePath, requests));
 
         // SetBreakpoints preserves request order, so results line up with forFile
         lock (_stateLock)
@@ -498,29 +647,94 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
+    /// Re-sends every function breakpoint.
+    /// ManagedDebugger.SetFunctionBreakpoints replaces all of them at once, so sending a single one
+    /// would silently drop the rest.
+    /// </summary>
+    private void ReapplyFunctionBreakpoints(ManagedDebugger debugger)
+    {
+        List<TrackedFunctionBreakpoint> all;
+
+        lock (_stateLock)
+        {
+            all = _functionBreakpoints.Values.OrderBy(b => b.Id).ToList();
+        }
+
+        var requests = all
+            .Select(b => new SharpDbgFunctionBreakpointRequest(b.FunctionName, b.Condition, b.HitCondition))
+            .ToArray();
+
+        var applied = RetryWhileModulesLoad(() => debugger.SetFunctionBreakpoints(requests));
+
+        // SetFunctionBreakpoints preserves request order, so results line up with all
+        lock (_stateLock)
+        {
+            for (var i = 0; i < all.Count && i < applied.Count; i++)
+                ApplyDebuggerState(all[i], applied[i]);
+        }
+    }
+
+    /// <summary>
+    /// Retries a breakpoint call that lost a race with module loading.
+    /// ManagedDebugger keeps its modules in a plain Dictionary that the module-load callback writes
+    /// to on the debugger's own thread, while binding enumerates it on ours, so a call made while
+    /// the debuggee is still loading assemblies can fail with "Collection was modified". Retrying is
+    /// safe because both SetBreakpoints and SetFunctionBreakpoints replace a whole set rather than
+    /// adding to one, so a call that half-finished leaves nothing behind to duplicate.
+    /// The exception type is the only signal available - the message is the framework's and is
+    /// localized - so the retries are kept few and short, and anything that survives them is
+    /// reported to the caller.
+    /// </summary>
+    private static List<BreakpointManager.BreakpointInfo> RetryWhileModulesLoad(
+        Func<List<BreakpointManager.BreakpointInfo>> apply)
+    {
+        const int MaxAttempts = 5;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return apply();
+            }
+            catch (InvalidOperationException) when (attempt < MaxAttempts)
+            {
+                Thread.Sleep(PollInterval);
+            }
+        }
+    }
+
+    /// <summary>
     /// Waits for a pending breakpoint to bind on the module-load callback, which is what makes a
     /// breakpoint set immediately after attaching come back verified. The wait is deliberately
-    /// short: a breakpoint that can never bind - a path the target does not contain, most often a
-    /// typo - has no event coming and costs the full timeout before it is reported.
+    /// short: a breakpoint that can never bind - a path the target does not contain, or a method
+    /// name that matches nothing, most often a typo - has no event coming and costs the full
+    /// timeout before it is reported.
     /// </summary>
-    private BreakpointResult WaitForVerification(int breakpointId)
+    private TResult WaitForBinding<TResult>(Func<TResult?> snapshot, Func<TResult, bool> isVerified)
+        where TResult : class
     {
-        BreakpointResult? current = null;
+        TResult? current = null;
 
         WaitFor(() =>
         {
-            lock (_stateLock)
-            {
-                if (!_breakpoints.TryGetValue(breakpointId, out var tracked))
-                    return true;
+            current = snapshot();
 
-                current = tracked.ToResult();
-            }
-
-            return current.Verified;
+            // Removed while being set: there is nothing left to wait for
+            return current == null || isVerified(current);
         }, _breakpointBindTimeout);
 
         return current ?? throw new InvalidOperationException("Breakpoint disappeared while being set");
+    }
+
+    private BreakpointResult WaitForVerification(int breakpointId)
+    {
+        return WaitForBinding(
+            () =>
+            {
+                lock (_stateLock)
+                    return _breakpoints.TryGetValue(breakpointId, out var tracked) ? tracked.ToResult() : null;
+            },
+            r => r.Verified);
     }
 
     /// <summary>
@@ -532,11 +746,49 @@ public class DebugSession : IDisposable
             PathComparer.Equals(b.FilePath, filePath) && (b.Line == line || b.ResolvedLine == line));
     }
 
+    private TrackedFunctionBreakpoint? FindByFunctionName(string functionName)
+    {
+        return _functionBreakpoints.Values.FirstOrDefault(b =>
+            string.Equals(b.FunctionName, functionName, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The id of whichever breakpoint covers a location, so a hit can be reported with the id the
+    /// caller was given. A function breakpoint is only ever known by where it bound.
+    /// </summary>
+    private int? FindIdByLocation(string filePath, int line)
+    {
+        var tracked = FindByLocation(filePath, line);
+
+        if (tracked != null)
+            return tracked.Id;
+
+        return _functionBreakpoints.Values
+            .FirstOrDefault(b => b.BoundLocations.Any(
+                l => PathComparer.Equals(l.FilePath, filePath) && l.Line == line))
+            ?.Id;
+    }
+
     private static void ApplyDebuggerState(TrackedBreakpoint tracked, BreakpointManager.BreakpointInfo info)
     {
         tracked.Verified = info.Verified;
         tracked.Message = info.Message;
         tracked.ResolvedLine = info.ResolvedBreakpointFromPdb?.StartLine;
+    }
+
+    private static void ApplyDebuggerState(
+        TrackedFunctionBreakpoint tracked,
+        BreakpointManager.BreakpointInfo info)
+    {
+        tracked.Verified = info.Verified;
+        tracked.Message = info.Message;
+
+        // One name can match several methods - overloads, or the same name in several modules -
+        // and each binding knows the source location it resolved to.
+        tracked.BoundLocations = info.FunctionBindings
+            .Select(b => new BoundLocation(b.Source.DocumentPath, b.Source.StartLine))
+            .Distinct()
+            .ToList();
     }
 
     /// <summary>
@@ -942,6 +1194,29 @@ internal sealed class TrackedBreakpoint(int id, string filePath, int line)
     public BreakpointResult ToResult() => new(Id, FilePath, Line, Verified, Message, Condition, HitCondition);
 }
 
+internal sealed class TrackedFunctionBreakpoint(int id, string functionName)
+{
+    public int Id { get; } = id;
+
+    /// <summary>Name pattern the caller asked for, e.g. "Program.Work" or "Work(int)"</summary>
+    public string FunctionName { get; } = functionName;
+
+    /// <summary>Where the name actually bound, one entry per matching method</summary>
+    public IReadOnlyList<BoundLocation> BoundLocations { get; set; } = [];
+
+    public string? Condition { get; set; }
+
+    /// <summary>Hit-count condition, e.g. "5", "&gt;=3", "%2"</summary>
+    public string? HitCondition { get; set; }
+
+    public bool Verified { get; set; }
+
+    public string? Message { get; set; }
+
+    public FunctionBreakpointResult ToResult() =>
+        new(Id, FunctionName, Verified, Message, BoundLocations, Condition, HitCondition);
+}
+
 /// <summary>
 /// Result of setting a breakpoint
 /// </summary>
@@ -953,6 +1228,24 @@ public record BreakpointResult(
     string? Message,
     string? Condition = null,
     string? HitCondition = null);
+
+/// <summary>
+/// Result of setting a function breakpoint. A single name can bind in more than one place, so the
+/// locations it bound to are what tells the caller which methods it actually matched.
+/// </summary>
+public record FunctionBreakpointResult(
+    int Id,
+    string FunctionName,
+    bool Verified,
+    string? Message,
+    IReadOnlyList<BoundLocation> BoundLocations,
+    string? Condition = null,
+    string? HitCondition = null);
+
+/// <summary>
+/// A source location a function breakpoint bound to
+/// </summary>
+public record BoundLocation(string FilePath, int Line);
 
 /// <summary>
 /// Information about a thread

@@ -489,6 +489,149 @@ public sealed class DebugSessionIntegrationTests
     }
 
     /// <summary>
+    /// A function breakpoint is the case where the caller knows the method but not the file and
+    /// line, so what matters is that the name binds and that the stop reports the id and the
+    /// location the caller never supplied.
+    /// </summary>
+    [TestMethod]
+    public async Task FunctionBreakpoint_ByTypeAndMethod_StopsAtTheMethodItBoundTo()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        // The type part matches by suffix, so the namespace can be left out
+        var breakpoint = session.SetFunctionBreakpoint("Program.Work");
+
+        Assert.IsTrue(breakpoint.Verified, $"Function breakpoint was not verified: {breakpoint.Message}");
+        Assert.IsGreaterThan(0, breakpoint.BoundLocations.Count, "A verified function breakpoint must say where it bound");
+        Assert.AreEqual(TestPaths.TestAppSource, breakpoint.BoundLocations[0].FilePath);
+
+        var state = WaitForStop(session);
+
+        Assert.AreEqual("breakpoint", state.StopReason);
+        Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee kept running while reported stopped");
+        Assert.IsNotNull(state.LastBreakpoint);
+        Assert.AreEqual(breakpoint.Id, state.LastBreakpoint.BreakpointId,
+            "The hit must be reported with the id the caller was given, not 0");
+        Assert.AreEqual(breakpoint.BoundLocations[0].Line, state.LastBreakpoint.Line);
+    }
+
+    [TestMethod]
+    public async Task FunctionBreakpoint_ByBareMethodName_Binds()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var breakpoint = session.SetFunctionBreakpoint("Work");
+
+        Assert.IsTrue(breakpoint.Verified, $"Function breakpoint was not verified: {breakpoint.Message}");
+        Assert.AreEqual("breakpoint", WaitForStop(session).StopReason);
+    }
+
+    /// <summary>
+    /// A name that matches nothing must be reported as unverified promptly, the same as a line
+    /// breakpoint on a path the target does not contain.
+    /// </summary>
+    [TestMethod]
+    public async Task FunctionBreakpoint_ThatMatchesNothing_IsReportedUnverifiedWithoutStalling()
+    {
+        var bindTimeout = TimeSpan.FromMilliseconds(500);
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = new DebugSession(
+            1,
+            new ServerConfiguration { BreakpointBindTimeoutMs = (int)bindTimeout.TotalMilliseconds });
+
+        await session.Attach(debuggee.ProcessId);
+
+        var elapsed = Stopwatch.StartNew();
+        var breakpoint = session.SetFunctionBreakpoint("NoSuchMethodAnywhere");
+        elapsed.Stop();
+
+        Assert.IsFalse(breakpoint.Verified);
+        Assert.IsNotNull(breakpoint.Message, "The caller needs to know why nothing was set");
+        Assert.IsEmpty(breakpoint.BoundLocations);
+        Assert.IsLessThan(bindTimeout * 6, elapsed.Elapsed, "SetFunctionBreakpoint stalled past the bind timeout");
+    }
+
+    /// <summary>
+    /// SetFunctionBreakpoints replaces every function breakpoint at once, so setting a second one
+    /// must not disarm the first - the same trap as SetBreakpoints per file.
+    /// </summary>
+    [TestMethod]
+    public async Task FunctionBreakpoint_SettingASecondOne_KeepsTheFirstArmed()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var first = session.SetFunctionBreakpoint("Program.Work");
+        var second = session.SetFunctionBreakpoint("Program.ThrowAndCatch");
+
+        Assert.IsTrue(first.Verified, $"First was not verified: {first.Message}");
+        Assert.IsTrue(second.Verified, $"Second was not verified: {second.Message}");
+        Assert.AreNotEqual(first.Id, second.Id);
+
+        var listed = session.ListFunctionBreakpoints();
+        Assert.HasCount(2, listed);
+        Assert.IsTrue(listed.All(b => b.Verified), "Re-sending the set left a function breakpoint unbound");
+
+        // Work is what the debuggee actually reaches with --throw off, so the first must still fire
+        var state = WaitForStop(session);
+        Assert.AreEqual(first.Id, state.LastBreakpoint!.BreakpointId);
+    }
+
+    [TestMethod]
+    public async Task RemoveBreakpoint_WithAFunctionBreakpointId_RemovesItAndLetsTheDebuggeeRun()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var breakpoint = session.SetFunctionBreakpoint("Program.Work");
+        WaitForStop(session);
+
+        // remove_breakpoint takes either kind of id
+        Assert.IsTrue(session.RemoveBreakpoint(breakpoint.Id));
+        Assert.IsEmpty(session.ListFunctionBreakpoints());
+
+        Assert.IsTrue(session.Continue());
+        Assert.IsGreaterThan(
+            0,
+            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+            "Debuggee stopped again, so the function breakpoint was still armed");
+    }
+
+    [TestMethod]
+    public async Task ListBreakpoints_WithBothKinds_KeepsThemApart()
+    {
+        var line = TestPaths.FindMarkerLine("STEP-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var lineBreakpoint = session.SetBreakpoint(TestPaths.TestAppSource, line);
+        var functionBreakpoint = session.SetFunctionBreakpoint("Program.Work");
+
+        var lines = session.ListBreakpoints();
+        var functions = session.ListFunctionBreakpoints();
+
+        Assert.HasCount(1, lines);
+        Assert.AreEqual(lineBreakpoint.Id, lines[0].Id);
+        Assert.HasCount(1, functions);
+        Assert.AreEqual(functionBreakpoint.Id, functions[0].Id);
+        Assert.AreEqual("Program.Work", functions[0].FunctionName);
+    }
+
+    /// <summary>
     /// The debugger stops on every first-chance exception, so the debuggee suspends even on one it
     /// catches itself. That is the default, and the stop has to name the exception and point at the
     /// throw site, or the caller cannot tell it apart from a breakpoint.
