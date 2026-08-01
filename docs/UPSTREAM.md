@@ -28,8 +28,8 @@ Two defects have no test watching them:
 
 - **4** is hidden by `DebugSession.RetryWhileModulesLoad`. To check it, look at whether
   `ManagedDebugger._modules` is still an unguarded `Dictionary`; if it is guarded, delete the retry.
-- **5** and **7** are races that show up as an occasional stuck or aborted test run rather than a
-  reproducible failure. When **7** is fixed, delete the retry loop in the `Integration tests` step of
+- **5** and **8** are races that show up as an occasional stuck or aborted test run rather than a
+  reproducible failure. When **8** is fixed, delete the retry loop in the `Integration tests` step of
   `.github/workflows/ci.yml`, which exists only because of it.
 
 ## SharpDbg (https://github.com/MattParkerDev/sharpdbg, MIT)
@@ -130,7 +130,45 @@ whole set - that is forced by the replace semantics - so each call on a running 
 to hit this. There is nothing safe to do here: pausing around the re-send would trade this race for a
 stop the caller did not ask for.
 
-### 6. An exception stop says neither the type nor whether it will be handled — not reported
+### 6. Decompiled source locations cannot be produced at all — not reported
+
+`OnStopped2` carries a `DecompiledSourceInfo` for stops in modules with no symbols of their own, which
+the debugger decompiles to get a location. It is never populated, because the path that would build it
+fails in three different ways before it gets there, and each failure is caught and logged as
+`Error handling event StepCompleteCorDebugManagedCallbackEventArgs` - after which the callback neither
+continues the process nor reports a stop, so the debuggee is left suspended while the session still
+believes it runs. The step is retried, so it fails again forever.
+
+Traced by stepping with `JustMyCode` off, which is required for any of this to be attempted:
+
+1. **The decompiler is not a declared dependency.** The path needs
+   `ICSharpCode.Decompiler 10.1.1.8388`, which the nuspec does not list, so it fails with
+   `FileNotFoundException: Could not load file or assembly 'ICSharpCode.Decompiler'`. Adding that
+   package to the consuming project gets past this - it is on nuget.org - but only reveals the next
+   failure, so this repository does not carry the dependency.
+2. **Decompiling System.Private.CoreLib throws.** With the decompiler present, `GeneratePdb` fails
+   with `NullReferenceException` inside itself. This is the module any step out of user code lands in
+   first, through string interpolation or `Thread.Sleep`.
+3. **A no-symbols assembly that counts as user code is refused.** Building a library with
+   `<DebugType>none</DebugType>` and stepping into it - the case this feature exists for - hits
+   upstream's own guard, `InvalidOperationException: The module we are decompiling is user code - this
+   should never happen`. The JIT flags make an unoptimized assembly user code whether or not it has a
+   PDB.
+
+There is a fourth problem underneath: a failed attempt leaves a truncated `.decompiled.pdb` in
+`%LOCALAPPDATA%/Temp/SharpIdeSymbolCache`, and every later step reports
+`could not load cached PDB` and fails again until that directory is deleted by hand.
+
+**Blocks:** a stop in code without symbols reports no location at all, and with `JustMyCode` off a
+step that reaches such code freezes the debuggee. `JustMyCode` defaults to true here, which avoids the
+freeze by never attempting the decompilation. Wiring the field through into `get_process_status` was
+tried and reverted: with nothing able to produce it, that is a field that is always null and a code
+path no test can reach. It is a handful of lines to add back when this works - capture the sixth
+argument of `OnStopped2` in `OnDebuggerStoppedAtLocation`, put it on `ExecutionState`, and report the
+type, the assembly and whether the file exists on disk, since the path names a document inside a
+generated PDB rather than a real file.
+
+### 7. An exception stop says neither the type nor whether it will be handled — not reported
 
 `HandleException` discards the callback's event type, so a stop cannot be classified as first-chance
 or unhandled, and the exception's type can only be read by running code in the target, which hits
@@ -141,7 +179,7 @@ what a debugger normally defaults to, and no filtering by exception type.
 
 ## .NET runtime
 
-### 7. libmscordbi segfaults while replaying attach events
+### 8. libmscordbi segfaults while replaying attach events
 
 A test run occasionally dies with `Test Run Aborted`, no failing test, and the log cut off mid-line.
 The macOS crash reports put it in the debugger shim, on its own event thread:

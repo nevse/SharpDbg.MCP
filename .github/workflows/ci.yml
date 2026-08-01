@@ -67,7 +67,7 @@ jobs:
       run: dotnet build --no-restore --configuration Release
 
     # The test host is killed by a segfault inside libmscordbi while it replays the events for an
-    # attach - see docs/UPSTREAM.md defect 7 - in roughly a fifth of macOS runs, and the integration
+    # attach - see docs/UPSTREAM.md defect 8 - in roughly a fifth of macOS runs, and the integration
     # tests attach around thirty times each. Only that crash is retried: a test that merely fails is
     # a result we want to see, so it ends the job on the first attempt. At a fifth per attempt, three
     # attempts leave under a percent of runs red for a reason that is not ours.
@@ -87,7 +87,7 @@ jobs:
 
           # A host-level abort leaves no failing test behind, which is how it is told apart from one
           if grep -qE "Test host process crashed|Test Run Aborted" "$log" && [ "$attempt" -lt "$attempts" ]; then
-            echo "::warning title=Test host crashed::Attempt $attempt of $attempts died in the debugger shim (docs/UPSTREAM.md defect 7), retrying"
+            echo "::warning title=Test host crashed::Attempt $attempt of $attempts died in the debugger shim (docs/UPSTREAM.md defect 8), retrying"
             attempt=$((attempt + 1))
             continue
           fi
