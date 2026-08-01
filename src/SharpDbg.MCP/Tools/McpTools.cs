@@ -11,24 +11,27 @@ namespace SharpDbg.MCP.Tools;
 /// Collection of MCP tools for documentation search
 /// </summary>
 [McpServerToolType]
-public static class McpTools
+public sealed class McpTools
 {
-    private static readonly Lazy<DocumentationLoader> _loader = new(() => new DocumentationLoader());
-    private static readonly Lazy<ConceptIndex> _conceptIndex = new(() => new ConceptIndex(_loader.Value));
-    private static readonly Lazy<FlowDiagramProvider> _flowProvider = new(() => new FlowDiagramProvider(_loader.Value));
+    private readonly DocumentationLoader _loader;
+    private readonly ConceptIndex _conceptIndex;
+    private readonly FlowDiagramProvider _flowProvider;
 
-    public static void Initialize()
+    public McpTools(DocumentationLoader loader, ConceptIndex conceptIndex, FlowDiagramProvider flowProvider)
     {
-        // Force initialization of lazy instances
-        _ = _loader.Value;
-        _ = _conceptIndex.Value;
-        _ = _flowProvider.Value;
+        ArgumentNullException.ThrowIfNull(loader);
+        ArgumentNullException.ThrowIfNull(conceptIndex);
+        ArgumentNullException.ThrowIfNull(flowProvider);
+
+        _loader = loader;
+        _conceptIndex = conceptIndex;
+        _flowProvider = flowProvider;
     }
 
     [McpServerTool, Description("Search the .NET debugger documentation for concepts related to the query")]
-    public static string SearchDebuggingConcepts(string query)
+    public string SearchDebuggingConcepts(string query)
     {
-        var results = _loader.Value.Search(query);
+        var results = _loader.Search(query);
 
         if (results.Count == 0)
         {
@@ -53,9 +56,9 @@ public static class McpTools
 
     // Name pinned: the SDK would turn ExplainICorDebugInterface into explain_i_cor_debug_interface
     [McpServerTool(Name = "explain_icordebug_interface")]
-    public static string ExplainICorDebugInterface(string interface_name)
+    public string ExplainICorDebugInterface(string interface_name)
     {
-        var results = _loader.Value.Search(interface_name);
+        var results = _loader.Search(interface_name);
 
         if (results.Count == 0)
         {
@@ -75,22 +78,22 @@ public static class McpTools
     }
 
     [McpServerTool, Description("Get the step-by-step flow for a debugging operation such as 'setting a breakpoint' or 'evaluating an expression'")]
-    public static string GetDebuggingFlow(string operation)
+    public string GetDebuggingFlow(string operation)
     {
-        var flow = _flowProvider.Value.GetFlow(operation);
+        var flow = _flowProvider.GetFlow(operation);
 
         if (flow == null)
         {
-            return $"No flow found for operation: {operation}\n\nAvailable flows: {string.Join(", ", _flowProvider.Value.GetAvailableFlows())}";
+            return $"No flow found for operation: {operation}\n\nAvailable flows: {string.Join(", ", _flowProvider.GetAvailableFlows())}";
         }
 
         return flow;
     }
 
     [McpServerTool, Description("List all available debugging concepts organized by category")]
-    public static string ListDebuggingConcepts()
+    public string ListDebuggingConcepts()
     {
-        var concepts = _conceptIndex.Value.GetAllConcepts();
+        var concepts = _conceptIndex.GetAllConcepts();
 
         var response = new
         {
