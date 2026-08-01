@@ -1,3 +1,5 @@
+using SharpDbg.MCP.Debugging;
+
 namespace SharpDbg.MCP.Tools;
 
 /// <summary>
@@ -94,6 +96,24 @@ public static class InputValidation
         if (timeoutMs > MaxTimeoutMs)
             throw new ArgumentException(
                 $"Timeout must be at most {MaxTimeoutMs}ms, got: {timeoutMs}", nameof(timeoutMs));
+    }
+
+    /// <summary>
+    /// Parses an exception break mode, naming the accepted values on failure - an unrecognised mode
+    /// silently falling back to a default would change whether the debuggee stops.
+    /// </summary>
+    public static ExceptionBreakMode ParseExceptionBreakMode(string mode)
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+            throw new ArgumentException("Exception break mode cannot be empty", nameof(mode));
+
+        return mode.Trim().ToLowerInvariant() switch
+        {
+            "always" => ExceptionBreakMode.Always,
+            "never" => ExceptionBreakMode.Never,
+            _ => throw new ArgumentException(
+                $"Exception break mode must be 'always' or 'never', got: {mode}", nameof(mode))
+        };
     }
 
     public static void ValidateExpression(string expression)

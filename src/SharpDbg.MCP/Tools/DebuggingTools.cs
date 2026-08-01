@@ -151,6 +151,49 @@ public static class DebuggingTools
         }
     }
 
+    [McpServerTool, Description(
+        "Control what happens when the debuggee throws. The debugger stops on every first-chance " +
+        "exception, including ones the program catches itself, so a program that uses exceptions " +
+        "routinely suspends constantly. " +
+        "mode 'always' (the default) keeps those stops - stop_reason is 'exception', and " +
+        "get_stack_trace on stopped_thread_id shows where it was thrown. " +
+        "mode 'never' resumes them automatically, which is what you want when hunting something " +
+        "else in a program whose own exceptions are noise. " +
+        "There is no mode for unhandled exceptions only, and no filtering by exception type: the " +
+        "debugger reports neither the type nor whether the program will handle it without running " +
+        "code in the target, which currently leaves the process unable to resume.")]
+    public static string SetExceptionBreakMode(string mode)
+    {
+        try
+        {
+            var parsed = InputValidation.ParseExceptionBreakMode(mode);
+
+            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+            session.ExceptionBreakMode = parsed;
+
+            var state = session.GetExecutionState();
+
+            var response = new
+            {
+                success = true,
+                mode = parsed.ToString().ToLowerInvariant(),
+                exceptions_seen = state.ExceptionsSeen,
+                exceptions_ignored = state.ExceptionsIgnored
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            var errorResponse = new
+            {
+                success = false,
+                error = ex.Message
+            };
+            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
     [McpServerTool, Description("Get the status of the current debug session")]
     public static string GetProcessStatus()
     {
@@ -166,6 +209,9 @@ public static class DebuggingTools
             is_stopped = state.IsAttached && !state.IsRunning,
             current_location = state.CurrentLocation,
             stop_reason = state.StopReason,
+            exception_break_mode = session.ExceptionBreakMode.ToString().ToLowerInvariant(),
+            exceptions_seen = state.ExceptionsSeen,
+            exceptions_ignored = state.ExceptionsIgnored,
             // The thread to pass to GetStackTrace/StepOver/StepInto/StepOut while stopped
             stopped_thread_id = state.StoppedThreadId,
             last_breakpoint = state.LastBreakpoint == null ? null : new
@@ -783,7 +829,14 @@ public static class DebuggingTools
         }
     }
 
-    [McpServerTool, Description("Evaluate a C# expression in the context of a stack frame")]
+    [McpServerTool, Description(
+        "Evaluate a C# expression in the context of a stack frame. " +
+        "WARNING: an expression that has to run code in the target - a property getter, ToString(), " +
+        "any method call - currently leaves the debuggee needing a second continue_execution before " +
+        "it really resumes, and after several such evaluations it may not resume at all. The first " +
+        "continue_execution still reports resumed=true, so the process looks running while it is " +
+        "suspended. This is a SharpDbg defect. Reading fields through get_variables and " +
+        "expand_variable does not have this problem.")]
     public static string EvaluateExpression(string expression, int frame_id)
     {
         try

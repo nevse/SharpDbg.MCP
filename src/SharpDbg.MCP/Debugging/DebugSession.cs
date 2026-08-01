@@ -10,6 +10,11 @@ namespace SharpDbg.MCP.Debugging;
 /// </summary>
 public class DebugSession : IDisposable
 {
+    /// <summary>
+    /// The reason ManagedDebugger reports for a first-chance exception stop
+    /// </summary>
+    private const string ExceptionStopReason = "exception";
+
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
 
     // macOS and Windows file systems are case-insensitive by default; Linux is not
@@ -22,6 +27,8 @@ public class DebugSession : IDisposable
     private readonly TimeSpan _evaluationTimeout;
     private readonly TimeSpan _breakpointBindTimeout;
     private readonly object _stateLock = new();
+    // Held while the debugger is released, so a queued resume cannot call into it at the same time
+    private readonly object _teardownLock = new();
     // Session-owned breakpoint ids. BreakpointManager reassigns its own ids every time a file's
     // breakpoints are re-sent, so they cannot be handed out as stable references.
     private readonly Dictionary<int, TrackedBreakpoint> _breakpoints = new();
@@ -34,8 +41,48 @@ public class DebugSession : IDisposable
     private string? _lastStopReason;
     private int? _lastStoppedThreadId;
     private BreakpointHitInfo? _lastBreakpoint;
+    private ExceptionBreakMode _exceptionBreakMode = ExceptionBreakMode.Always;
+    private int _exceptionsSeen;
+    private int _exceptionsIgnored;
 
     public int SessionId => _sessionId;
+
+    /// <summary>
+    /// Whether first-chance exceptions suspend the debuggee (Always, the debugger's own behaviour)
+    /// or are resumed by the session (Never). There is no mode for unhandled exceptions only:
+    /// ManagedDebugger does not pass on the callback's event type, so a stop carries no way to tell
+    /// whether the program is going to handle the exception.
+    /// </summary>
+    public ExceptionBreakMode ExceptionBreakMode
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _exceptionBreakMode;
+            }
+        }
+        set
+        {
+            bool resumeNow;
+
+            lock (_stateLock)
+            {
+                _exceptionBreakMode = value;
+
+                // Switching to Never while already stopped on an exception has to release that stop
+                resumeNow = value == ExceptionBreakMode.Never
+                    && !_isRunning
+                    && _lastStopReason == ExceptionStopReason
+                    && _attachedProcessId.HasValue;
+            }
+
+            McpLogger.LogDebugSessionEvent(_sessionId, "ExceptionBreakMode", value.ToString());
+
+            if (resumeNow)
+                ResumeIgnoredException(_lastStoppedThreadId ?? 0);
+        }
+    }
 
     public bool IsAttached
     {
@@ -103,6 +150,8 @@ public class DebugSession : IDisposable
             _attachedProcessId = processId;
             _lastBreakpoint = null;
             _isRunning = true;
+            _exceptionsSeen = 0;
+            _exceptionsIgnored = 0;
             ClearStopState();
         }
 
@@ -134,10 +183,51 @@ public class DebugSession : IDisposable
             _isRunning = false;
             _lastStoppedThreadId = threadId;
             _lastStopReason = reason;
+
+            if (reason == ExceptionStopReason)
+                _exceptionsSeen++;
         }
 
         McpLogger.LogDebugSessionEvent(_sessionId, "Stopped", $"Thread {threadId}: {reason}");
         LogMessage($"Stopped on thread {threadId}: {reason}");
+
+        if (reason == ExceptionStopReason && ExceptionBreakMode == ExceptionBreakMode.Never)
+            ResumeIgnoredException(threadId);
+    }
+
+    /// <summary>
+    /// The debugger stops on every first-chance exception, including ones the program catches
+    /// itself, and offers no way to filter them, so a program that uses exceptions routinely
+    /// suspends on each one. In Never mode the session resumes them itself.
+    /// The resume is queued rather than run here: this is the debugger's callback thread, and
+    /// continuing inline would nest a stop inside a stop for as long as the exceptions keep coming.
+    /// </summary>
+    private void ResumeIgnoredException(int threadId)
+    {
+        lock (_stateLock)
+            _exceptionsIgnored++;
+
+        _ = Task.Run(() =>
+        {
+            // The resume must not overlap a teardown: Disconnect while a Continue is in flight
+            // reaches ICorDebug on a process that is being released.
+            lock (_teardownLock)
+            {
+                try
+                {
+                    if (!IsAttached)
+                        return;
+
+                    Continue();
+                }
+                catch (Exception ex)
+                {
+                    // Detaching or exiting while an ignored exception was in flight is not a failure
+                    McpLogger.LogDebugSessionEvent(_sessionId, "ExceptionIgnored",
+                        $"Could not resume thread {threadId}: {ex.Message}");
+                }
+            }
+        });
     }
 
     /// <summary>
@@ -236,7 +326,9 @@ public class DebugSession : IDisposable
                 _currentLocation,
                 _lastBreakpoint,
                 _lastStoppedThreadId,
-                _lastStopReason);
+                _lastStopReason,
+                _exceptionsSeen,
+                _exceptionsIgnored);
         }
     }
 
@@ -625,6 +717,14 @@ public class DebugSession : IDisposable
     /// </summary>
     private void DetachCore()
     {
+        // Serialized against an in-flight resume of an ignored exception, which runs on its own
+        // thread and would otherwise be talking to a debugger that is being disconnected
+        lock (_teardownLock)
+            DetachCoreUnsynchronized();
+    }
+
+    private void DetachCoreUnsynchronized()
+    {
         ManagedDebugger? debuggerToRelease;
 
         lock (_stateLock)
@@ -784,7 +884,27 @@ public record ExecutionState(
     string? CurrentLocation = null,
     BreakpointHitInfo? LastBreakpoint = null,
     int? StoppedThreadId = null,
-    string? StopReason = null);
+    string? StopReason = null,
+    int ExceptionsSeen = 0,
+    int ExceptionsIgnored = 0);
+
+/// <summary>
+/// What the session does when the debuggee stops on a first-chance exception
+/// </summary>
+public enum ExceptionBreakMode
+{
+    /// <summary>
+    /// Stay stopped on every exception, including ones the program catches itself. This is what
+    /// ManagedDebugger does on its own and stays the default, so nothing is hidden by surprise.
+    /// </summary>
+    Always,
+
+    /// <summary>
+    /// Resume the debuggee whenever it stops on an exception, so a program that throws routinely
+    /// can be debugged with breakpoints without being interrupted by its own caught exceptions.
+    /// </summary>
+    Never
+}
 
 /// <summary>
 /// Information about a breakpoint that was hit

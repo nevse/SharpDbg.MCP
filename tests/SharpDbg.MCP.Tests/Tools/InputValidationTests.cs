@@ -1,5 +1,6 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
+using SharpDbg.MCP.Debugging;
 using SharpDbg.MCP.Tools;
 
 namespace SharpDbg.MCP.Tests.Tools;
@@ -212,6 +213,29 @@ public class InputValidationTests
             Assert.Fail("Expected ArgumentException for whitespace expression");
         }
         catch (ArgumentException) { }
+    }
+
+    [TestMethod]
+    public void ParseExceptionBreakMode_KnownModes_ParsesCaseInsensitively()
+    {
+        Assert.AreEqual(ExceptionBreakMode.Always, InputValidation.ParseExceptionBreakMode("always"));
+        Assert.AreEqual(ExceptionBreakMode.Always, InputValidation.ParseExceptionBreakMode(" Always "));
+        Assert.AreEqual(ExceptionBreakMode.Never, InputValidation.ParseExceptionBreakMode("NEVER"));
+    }
+
+    [TestMethod]
+    public void ParseExceptionBreakMode_UnknownMode_ThrowsInsteadOfDefaulting()
+    {
+        // Falling back to a default would silently change whether the debuggee stops
+        foreach (var mode in new[] { "", "  ", "unhandled", "sometimes" })
+        {
+            try
+            {
+                InputValidation.ParseExceptionBreakMode(mode);
+                Assert.Fail($"Expected ArgumentException for mode '{mode}'");
+            }
+            catch (ArgumentException) { }
+        }
     }
 
     [TestMethod]

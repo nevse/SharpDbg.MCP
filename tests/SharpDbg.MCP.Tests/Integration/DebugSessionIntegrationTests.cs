@@ -488,6 +488,106 @@ public sealed class DebugSessionIntegrationTests
             "Debuggee stayed suspended after detach");
     }
 
+    /// <summary>
+    /// The debugger stops on every first-chance exception, so the debuggee suspends even on one it
+    /// catches itself. That is the default, and the stop has to name the exception and point at the
+    /// throw site, or the caller cannot tell it apart from a breakpoint.
+    /// </summary>
+    [TestMethod]
+    public async Task ExceptionStop_WithBreakModeAlways_SuspendsAtTheThrowSite()
+    {
+        var throwLine = TestPaths.FindMarkerLine("THROW-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        Assert.AreEqual(ExceptionBreakMode.Always, session.ExceptionBreakMode, "Always must stay the default");
+
+        await session.Attach(debuggee.ProcessId);
+
+        var state = session.WaitForStop(StopTimeout);
+
+        Assert.IsNotNull(state, "The debuggee throws every iteration, so it must have stopped");
+        Assert.AreEqual("exception", state.StopReason);
+        Assert.IsNotNull(state.StoppedThreadId, "Callers need the thread to ask where the exception came from");
+        Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee kept running while reported stopped");
+
+        // ManagedDebugger reports no source location for exception stops, so the stack is the only
+        // way to find the throw site
+        var frames = session.GetStackTrace(state.StoppedThreadId.Value);
+        Assert.AreEqual(throwLine, frames[0].Line, $"Top frame should be the throw, frames: {string.Join(", ", frames.Select(f => $"{f.Name}@{f.Line}"))}");
+    }
+
+    [TestMethod]
+    public async Task ExceptionStop_WithBreakModeNever_LetsTheDebuggeeRunOn()
+    {
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        session.ExceptionBreakMode = ExceptionBreakMode.Never;
+
+        await session.Attach(debuggee.ProcessId);
+
+        // Every iteration throws, so an unresumed exception stop would show up as silence here
+        Assert.IsGreaterThan(
+            0,
+            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+            "Debuggee stayed suspended on an exception that should have been resumed");
+
+        var state = session.GetExecutionState();
+        Assert.IsTrue(state.IsRunning, $"Session reports stopped: reason={state.StopReason}");
+        Assert.IsGreaterThan(0, state.ExceptionsSeen, "The debuggee did throw, so the stops must have been counted");
+        Assert.IsGreaterThan(0, state.ExceptionsIgnored);
+    }
+
+    /// <summary>
+    /// Ignoring exceptions must not swallow the stops the caller actually asked for.
+    /// </summary>
+    [TestMethod]
+    public async Task ExceptionStop_WithBreakModeNever_StillStopsAtBreakpoints()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        session.ExceptionBreakMode = ExceptionBreakMode.Never;
+
+        await session.Attach(debuggee.ProcessId);
+        var breakpoint = session.SetBreakpoint(TestPaths.TestAppSource, line);
+        Assert.IsTrue(breakpoint.Verified, $"Breakpoint was not verified: {breakpoint.Message}");
+
+        var state = session.WaitForStop(StopTimeout);
+
+        Assert.IsNotNull(state, "The breakpoint should still have been hit");
+        Assert.AreEqual("breakpoint", state.StopReason);
+        Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee kept running while stopped at a breakpoint");
+    }
+
+    /// <summary>
+    /// Switching to Never while already suspended on an exception has to release that stop too,
+    /// otherwise the caller has to know to continue by hand, which is what the mode is for.
+    /// </summary>
+    [TestMethod]
+    public async Task SwitchingToBreakModeNever_ReleasesAnExceptionStopAlreadyInProgress()
+    {
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var stopped = session.WaitForStop(StopTimeout);
+        Assert.IsNotNull(stopped);
+        Assert.AreEqual("exception", stopped.StopReason);
+
+        session.ExceptionBreakMode = ExceptionBreakMode.Never;
+
+        Assert.IsGreaterThan(
+            0,
+            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+            "The exception stop that was already in progress was never released");
+    }
+
     [TestMethod]
     public async Task WaitForStop_WhileRunning_ReturnsTheBreakpointStopWithoutPolling()
     {

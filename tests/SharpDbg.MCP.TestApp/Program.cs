@@ -7,8 +7,11 @@ namespace SharpDbg.MCP.TestApp;
 /// </summary>
 internal static class Program
 {
-    private static void Main()
+    private static void Main(string[] args)
     {
+        // Off by default, so tests that are not about exceptions are not disturbed by them
+        var throwEachIteration = args.Contains("--throw");
+
         Console.WriteLine($"PID={Environment.ProcessId}");
         Console.Out.Flush();
 
@@ -16,9 +19,28 @@ internal static class Program
         while (true)
         {
             counter = Work(counter);
+
+            if (throwEachIteration)
+                ThrowAndCatch(counter);
+
             Console.WriteLine($"tick {counter}");
             Console.Out.Flush();
             Thread.Sleep(150);
+        }
+    }
+
+    /// <summary>
+    /// Throws and handles the exception itself, which is what a debugger that breaks on every
+    /// first-chance exception has to cope with: nothing is actually wrong with this program.
+    /// </summary>
+    private static void ThrowAndCatch(int counter)
+    {
+        try
+        {
+            throw new InvalidOperationException($"thrown on iteration {counter}"); // THROW-TARGET
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 
