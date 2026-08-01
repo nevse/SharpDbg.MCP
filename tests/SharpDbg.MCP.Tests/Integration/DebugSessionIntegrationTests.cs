@@ -1,5 +1,6 @@
 using SharpDbg.MCP.Configuration;
 using SharpDbg.MCP.Debugging;
+using SharpDbg.MCP.Tools;
 
 namespace SharpDbg.MCP.Tests.Integration;
 
@@ -168,6 +169,17 @@ public sealed class DebugSessionIntegrationTests
             $"Expected to stop at both lines, stopped at: {string.Join(", ", stops)}");
     }
 
+    /// <summary>
+    /// Reads the debuggee's loop counter at the current stop, so tests can pin conditions to a
+    /// value relative to where the process happens to be rather than guessing an absolute one.
+    /// </summary>
+    private static async Task<int> ReadCurrentAsync(DebugSession session, ExecutionState state)
+    {
+        var frames = session.GetStackTrace(state.StoppedThreadId!.Value);
+        var evaluation = await session.EvaluateExpression("current", frames[0].Id);
+        return int.Parse(evaluation.Result);
+    }
+
     private static int LineOf(string? location)
     {
         Assert.IsNotNull(location, "Stop reported no location");
@@ -244,6 +256,77 @@ public sealed class DebugSessionIntegrationTests
         await session.Attach(debuggee.ProcessId);
 
         Assert.IsEmpty(session.ListBreakpoints());
+    }
+
+    [TestMethod]
+    public async Task ConditionalBreakpoint_OnlyStopsWhenTheConditionHolds()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        var start = await ReadCurrentAsync(session, WaitForStop(session));
+
+        // Two iterations ahead, so the condition cannot already be satisfied
+        var target = start + 2;
+        var breakpoint = session.SetBreakpoint(TestPaths.TestAppSource, line, $"current == {target}");
+        Assert.IsTrue(breakpoint.Verified, $"Conditional breakpoint not verified: {breakpoint.Message}");
+        Assert.AreEqual($"current == {target}", breakpoint.Condition);
+
+        session.Continue();
+
+        var stopped = WaitForStop(session);
+        Assert.AreEqual("breakpoint", stopped.StopReason);
+        Assert.AreEqual(
+            target,
+            await ReadCurrentAsync(session, stopped),
+            "Stopped on an iteration where the condition was false");
+    }
+
+    [TestMethod]
+    public async Task HitConditionBreakpoint_StopsOnTheRequestedHit()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        var start = await ReadCurrentAsync(session, WaitForStop(session));
+
+        // Re-sending the breakpoint recreates it, so its hit count restarts from zero here
+        session.SetBreakpoint(TestPaths.TestAppSource, line, condition: null, hitCondition: "==3");
+        session.Continue();
+
+        var stopped = WaitForStop(session);
+        Assert.AreEqual(
+            start + 3,
+            await ReadCurrentAsync(session, stopped),
+            "Expected to stop on the third hit after the count was reset");
+    }
+
+    [TestMethod]
+    public async Task SetBreakpoint_InvalidHitCondition_IsRejected()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        // The debugger treats an unparseable hit condition as never satisfied, so it has to be
+        // rejected up front rather than producing a breakpoint that silently never fires.
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateHitCondition("every other"));
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateHitCondition("%0"));
+
+        InputValidation.ValidateHitCondition(">=3");
+        session.SetBreakpoint(TestPaths.TestAppSource, line, condition: null, hitCondition: ">=3");
+        Assert.AreEqual(">=3", session.ListBreakpoints()[0].HitCondition);
     }
 
     /// <summary>

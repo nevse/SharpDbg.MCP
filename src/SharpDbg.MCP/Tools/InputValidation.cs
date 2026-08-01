@@ -41,6 +41,38 @@ public static class InputValidation
             throw new ArgumentException($"Breakpoint ID must be positive, got: {breakpointId}", nameof(breakpointId));
     }
 
+    /// <summary>
+    /// Validates a hit-count condition. The debugger silently treats an unparseable one as never
+    /// satisfied, which would leave a breakpoint that never fires and no indication why.
+    /// </summary>
+    public static void ValidateHitCondition(string? hitCondition)
+    {
+        if (string.IsNullOrWhiteSpace(hitCondition))
+            return;
+
+        var text = hitCondition.Trim();
+
+        var operatorLength = text switch
+        {
+            _ when text.StartsWith("==", StringComparison.Ordinal) => 2,
+            _ when text.StartsWith(">=", StringComparison.Ordinal) => 2,
+            _ when text.StartsWith("<=", StringComparison.Ordinal) => 2,
+            _ when text[0] is '>' or '<' or '%' => 1,
+            _ => 0
+        };
+
+        if (!int.TryParse(text[operatorLength..], out var count))
+            throw new ArgumentException(
+                "Hit condition must be a count, optionally prefixed with ==, >=, <=, >, < or %, " +
+                $"got: {hitCondition}",
+                nameof(hitCondition));
+
+        if (text[0] == '%' && count <= 0)
+            throw new ArgumentException(
+                $"A '%' hit condition needs a positive interval, got: {hitCondition}",
+                nameof(hitCondition));
+    }
+
     public static void ValidateExpression(string expression)
     {
         if (string.IsNullOrWhiteSpace(expression))

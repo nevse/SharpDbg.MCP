@@ -32,12 +32,6 @@ most common reason a breakpoint stays unverified.
 
 ## P2 — capabilities the current package already supports
 
-### Conditional and hit-count breakpoints
-`DebugSession.SetBreakpoint` already accepts a condition and forwards it in
-`SharpDbgBreakpointRequest`, and re-registration preserves it. All that is missing is a `condition`
-parameter on the `set_breakpoint` tool, plus `HitCondition`, which is not plumbed through yet.
-**Effort: S**
-
 ### Function breakpoints
 0.1.7 supports breakpoints bound by function rather than file/line
 (`BreakpointInfo.IsFunctionBreakpoint`). Useful when the caller knows a method name but not a path.
