@@ -95,7 +95,18 @@ public static class DebuggingTools
             is_attached = state.IsAttached,
             process_id = state.ProcessId,
             is_running = state.IsRunning,
-            current_location = state.CurrentLocation
+            is_stopped = state.IsAttached && !state.IsRunning,
+            current_location = state.CurrentLocation,
+            stop_reason = state.StopReason,
+            // The thread to pass to GetStackTrace/StepOver/StepInto/StepOut while stopped
+            stopped_thread_id = state.StoppedThreadId,
+            last_breakpoint = state.LastBreakpoint == null ? null : new
+            {
+                id = state.LastBreakpoint.BreakpointId,
+                file_path = state.LastBreakpoint.FilePath,
+                line = state.LastBreakpoint.Line,
+                thread_id = state.LastBreakpoint.ThreadId
+            }
         };
 
         return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
@@ -351,12 +362,15 @@ public static class DebuggingTools
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
 
-            session.Continue();
+            var resumed = session.Continue();
 
             var response = new
             {
                 success = true,
-                message = "Process execution resumed. It will run until a breakpoint is hit or the process exits."
+                resumed,
+                message = resumed
+                    ? "Process execution resumed. It will run until a breakpoint is hit or the process exits."
+                    : "Process was already running; nothing to resume. Use GetProcessStatus to check whether it has stopped."
             };
 
             return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });

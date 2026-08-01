@@ -9,12 +9,20 @@ namespace SharpDbg.MCP.Debugging;
 /// </summary>
 public class DebugSession : IDisposable
 {
+    private static readonly TimeSpan AttachTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan BreakpointVerificationTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
+
     private readonly int _sessionId;
     private readonly object _stateLock = new();
+    private readonly Dictionary<(string FilePath, int Line), BreakpointResult> _breakpoints = new();
     private ManagedDebugger? _debugger;
     private int? _attachedProcessId;
     private bool _disposed;
-    private bool _isRunning;
+    private string? _currentLocation;
+    private string? _lastStopReason;
+    private int? _lastStoppedThreadId;
+    private BreakpointHitInfo? _lastBreakpoint;
 
     public int SessionId => _sessionId;
 
@@ -50,6 +58,8 @@ public class DebugSession : IDisposable
     /// </summary>
     public void Attach(int processId)
     {
+        ManagedDebugger debugger;
+
         lock (_stateLock)
         {
             if (_disposed)
@@ -60,29 +70,42 @@ public class DebugSession : IDisposable
 
             McpLogger.LogDebugSessionEvent(_sessionId, "Attaching", $"Process ID: {processId}");
 
-            try
-            {
-                _debugger = new ManagedDebugger(LogMessage);
+            debugger = new ManagedDebugger(LogMessage);
 
-                // Subscribe to debugger events
-                _debugger.OnStopped += OnDebuggerStopped;
-                _debugger.OnContinued += OnDebuggerContinued;
-                _debugger.OnExited += OnDebuggerExited;
-                _debugger.OnOutput += OnDebuggerOutput;
-                _debugger.OnBreakpointChanged += OnDebuggerBreakpointChanged;
+            // Subscribe to debugger events. OnStopped only reports pause/exception/entry stops;
+            // breakpoint hits and completed steps arrive on OnStopped2 (which also carries the
+            // source location), so both must be handled to observe every stop.
+            debugger.OnStopped += OnDebuggerStopped;
+            debugger.OnStopped2 += OnDebuggerStoppedAtLocation;
+            debugger.OnContinued += OnDebuggerContinued;
+            debugger.OnExited += OnDebuggerExited;
+            debugger.OnOutput += OnDebuggerOutput;
+            debugger.OnBreakpointChanged += OnDebuggerBreakpointChanged;
 
-                _debugger.Attach(processId);
-                _debugger.ConfigurationDone();
-                _attachedProcessId = processId;
-                _isRunning = false;
+            _debugger = debugger;
+            _attachedProcessId = processId;
+            _lastBreakpoint = null;
+            ClearStopState();
+        }
 
-                McpLogger.LogDebugSessionEvent(_sessionId, "Attached", $"Successfully attached to process {processId}");
-            }
-            catch (Exception ex)
-            {
-                McpLogger.LogDebugSessionError(_sessionId, "Attach", ex);
-                throw;
-            }
+        try
+        {
+            debugger.Attach(processId);
+            debugger.ConfigurationDone();
+
+            // ConfigurationDone kicks the attach off on a background thread and returns before the
+            // process is available. Without waiting, a Continue or SetBreakpoint issued right after
+            // attaching is silently applied to a null process.
+            if (!WaitFor(() => debugger.IsRunning, AttachTimeout))
+                throw new TimeoutException($"Timed out waiting to attach to process {processId}");
+
+            McpLogger.LogDebugSessionEvent(_sessionId, "Attached", $"Successfully attached to process {processId}");
+        }
+        catch (Exception ex)
+        {
+            McpLogger.LogDebugSessionError(_sessionId, "Attach", ex);
+            DetachCore();
+            throw;
         }
     }
 
@@ -90,18 +113,43 @@ public class DebugSession : IDisposable
     {
         lock (_stateLock)
         {
-            _isRunning = false;
+            _lastStoppedThreadId = threadId;
+            _lastStopReason = reason;
         }
+
         McpLogger.LogDebugSessionEvent(_sessionId, "Stopped", $"Thread {threadId}: {reason}");
         LogMessage($"Stopped on thread {threadId}: {reason}");
+    }
+
+    /// <summary>
+    /// Handles stops that carry a source location (breakpoint hits and completed steps)
+    /// </summary>
+    private void OnDebuggerStoppedAtLocation(int threadId, string filePath, int line, string reason)
+    {
+        lock (_stateLock)
+        {
+            _lastStoppedThreadId = threadId;
+            _lastStopReason = reason;
+            _currentLocation = $"{filePath}:{line}";
+
+            if (reason == "breakpoint")
+            {
+                var breakpointId = _breakpoints.TryGetValue((filePath, line), out var known) ? known.Id : 0;
+                _lastBreakpoint = new BreakpointHitInfo(breakpointId, filePath, line, threadId);
+            }
+        }
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "Stopped", $"Thread {threadId} at {filePath}:{line}: {reason}");
+        LogMessage($"Stopped on thread {threadId} at {filePath}:{line}: {reason}");
     }
 
     private void OnDebuggerContinued(int threadId)
     {
         lock (_stateLock)
         {
-            _isRunning = true;
+            ClearStopState();
         }
+
         McpLogger.LogDebugSessionEvent(_sessionId, "Continued", $"Thread {threadId}");
         LogMessage($"Continued on thread {threadId}");
     }
@@ -110,8 +158,9 @@ public class DebugSession : IDisposable
     {
         lock (_stateLock)
         {
-            _isRunning = false;
+            ClearStopState();
         }
+
         McpLogger.LogDebugSessionEvent(_sessionId, "Exited", "Process terminated");
         LogMessage("Process exited");
     }
@@ -124,6 +173,16 @@ public class DebugSession : IDisposable
 
     private void OnDebuggerBreakpointChanged(SharpDbg.Infrastructure.Debugger.BreakpointManager.BreakpointInfo breakpoint)
     {
+        lock (_stateLock)
+        {
+            _breakpoints[(breakpoint.FilePath, breakpoint.Line)] = new BreakpointResult(
+                breakpoint.Id,
+                breakpoint.FilePath,
+                breakpoint.Line,
+                breakpoint.Verified,
+                breakpoint.Message);
+        }
+
         McpLogger.LogDebugSessionEvent(_sessionId, "BreakpointChanged",
             $"{breakpoint.FilePath}:{breakpoint.Line} (verified={breakpoint.Verified})");
         LogMessage($"Breakpoint changed: {breakpoint.FilePath}:{breakpoint.Line} (verified={breakpoint.Verified})");
@@ -139,10 +198,18 @@ public class DebugSession : IDisposable
             if (_disposed)
                 throw new ObjectDisposedException(nameof(DebugSession));
 
+            // ManagedDebugger owns the authoritative running flag - it clears it on the ICorDebug
+            // callback thread the moment the process stops, so mirroring it here would drift.
+            var isRunning = _debugger?.IsRunning ?? false;
+
             return new ExecutionState(
-                _isRunning,
+                isRunning,
                 _attachedProcessId.HasValue,
-                _attachedProcessId);
+                _attachedProcessId,
+                _currentLocation,
+                _lastBreakpoint,
+                _lastStoppedThreadId,
+                _lastStopReason);
         }
     }
 
@@ -151,43 +218,60 @@ public class DebugSession : IDisposable
     /// </summary>
     public BreakpointResult SetBreakpoint(string filePath, int line)
     {
-        lock (_stateLock)
+        var debugger = RequireDebugger();
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "SetBreakpoint", $"{filePath}:{line}");
+
+        try
         {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
+            var breakpoints = debugger.SetBreakpoints(filePath, new[] { line });
 
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
+            if (breakpoints.Count == 0)
+                throw new InvalidOperationException("Failed to create breakpoint");
 
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
+            var bp = breakpoints[0];
+            var result = new BreakpointResult(bp.Id, bp.FilePath, bp.Line, bp.Verified, bp.Message);
 
-            McpLogger.LogDebugSessionEvent(_sessionId, "SetBreakpoint", $"{filePath}:{line}");
-
-            try
+            lock (_stateLock)
             {
-                var breakpoints = _debugger.SetBreakpoints(filePath, new[] { line });
-
-                if (breakpoints.Count == 0)
-                    throw new InvalidOperationException("Failed to create breakpoint");
-
-                var bp = breakpoints[0];
-                McpLogger.LogDebugSessionEvent(_sessionId, "BreakpointSet",
-                    $"ID {bp.Id} at {bp.FilePath}:{bp.Line} (verified={bp.Verified})");
-
-                return new BreakpointResult(
-                    bp.Id,
-                    bp.FilePath,
-                    bp.Line,
-                    bp.Verified,
-                    bp.Message);
+                _breakpoints[(result.FilePath, result.Line)] = result;
             }
-            catch (Exception ex)
-            {
-                McpLogger.LogDebugSessionError(_sessionId, "SetBreakpoint", ex);
-                throw;
-            }
+
+            // A breakpoint created before the target module's symbols have loaded comes back
+            // unverified and binds later, on the module-load callback. Wait for that instead of
+            // reporting a pending breakpoint that is about to become active.
+            if (!result.Verified)
+                result = WaitForVerification(result);
+
+            McpLogger.LogDebugSessionEvent(_sessionId, "BreakpointSet",
+                $"ID {result.Id} at {result.FilePath}:{result.Line} (verified={result.Verified})");
+
+            return result;
         }
+        catch (Exception ex)
+        {
+            McpLogger.LogDebugSessionError(_sessionId, "SetBreakpoint", ex);
+            throw;
+        }
+    }
+
+    private BreakpointResult WaitForVerification(BreakpointResult breakpoint)
+    {
+        var key = (breakpoint.FilePath, breakpoint.Line);
+        var current = breakpoint;
+
+        WaitFor(() =>
+        {
+            lock (_stateLock)
+            {
+                if (_breakpoints.TryGetValue(key, out var tracked))
+                    current = tracked;
+            }
+
+            return current.Verified;
+        }, BreakpointVerificationTimeout);
+
+        return current;
     }
 
     /// <summary>
@@ -195,19 +279,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public List<StackFrameInfo> GetStackTrace(int threadId)
     {
-        lock (_stateLock)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
-
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
-
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
-
-            return _debugger.GetStackTrace(threadId);
-        }
+        return RequireDebugger().GetStackTrace(threadId);
     }
 
     /// <summary>
@@ -215,20 +287,8 @@ public class DebugSession : IDisposable
     /// </summary>
     public List<ThreadInfo> GetThreads()
     {
-        lock (_stateLock)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
-
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
-
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
-
-            var threads = _debugger.GetThreads();
-            return threads.Select(t => new ThreadInfo(t.id, t.name)).ToList();
-        }
+        var threads = RequireDebugger().GetThreads();
+        return threads.Select(t => new ThreadInfo(t.id, t.name)).ToList();
     }
 
     /// <summary>
@@ -236,20 +296,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public async Task<List<VariableInfo>> GetVariables(int frameId)
     {
-        ManagedDebugger? debugger;
-        lock (_stateLock)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
-
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
-
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
-
-            debugger = _debugger;
-        }
+        var debugger = RequireDebugger();
 
         // Call async methods outside the lock to avoid deadlocks
         var scopes = debugger.GetScopes(frameId);
@@ -261,25 +308,29 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Continue execution until next breakpoint or exit
+    /// Continue execution until next breakpoint or exit.
+    /// Returns false when the process was already running and nothing needed resuming.
     /// </summary>
-    public void Continue()
+    public bool Continue()
     {
+        var debugger = RequireDebugger();
+
+        // Continuing an already-running process throws CORDBG_E_SUPERFLOUS_CONTINUE out of COM.
+        if (debugger.IsRunning)
+        {
+            McpLogger.LogDebugSessionEvent(_sessionId, "Continue", "Already running - ignored");
+            return false;
+        }
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "Continue", "Resuming execution");
+
         lock (_stateLock)
         {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
-
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
-
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
-
-            McpLogger.LogDebugSessionEvent(_sessionId, "Continue", "Resuming execution");
-            _debugger.Continue();
-            _isRunning = true;
+            ClearStopState();
         }
+
+        debugger.Continue();
+        return true;
     }
 
     /// <summary>
@@ -287,21 +338,10 @@ public class DebugSession : IDisposable
     /// </summary>
     public void Pause()
     {
-        lock (_stateLock)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
+        var debugger = RequireDebugger();
 
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
-
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
-
-            McpLogger.LogDebugSessionEvent(_sessionId, "Pause", "Breaking execution");
-            _debugger.Pause();
-            _isRunning = false;
-        }
+        McpLogger.LogDebugSessionEvent(_sessionId, "Pause", "Breaking execution");
+        debugger.Pause();
     }
 
     /// <summary>
@@ -309,21 +349,11 @@ public class DebugSession : IDisposable
     /// </summary>
     public void StepOver(int threadId)
     {
-        lock (_stateLock)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
+        var debugger = RequireDebugger();
 
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
-
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
-
-            McpLogger.LogDebugSessionEvent(_sessionId, "StepOver", $"Thread {threadId}");
-            _debugger.StepNext(threadId);
-            _isRunning = true;
-        }
+        McpLogger.LogDebugSessionEvent(_sessionId, "StepOver", $"Thread {threadId}");
+        BeginStep(debugger);
+        debugger.StepNext(threadId);
     }
 
     /// <summary>
@@ -331,21 +361,11 @@ public class DebugSession : IDisposable
     /// </summary>
     public void StepInto(int threadId)
     {
-        lock (_stateLock)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
+        var debugger = RequireDebugger();
 
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
-
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
-
-            McpLogger.LogDebugSessionEvent(_sessionId, "StepInto", $"Thread {threadId}");
-            _debugger.StepIn(threadId);
-            _isRunning = true;
-        }
+        McpLogger.LogDebugSessionEvent(_sessionId, "StepInto", $"Thread {threadId}");
+        BeginStep(debugger);
+        debugger.StepIn(threadId);
     }
 
     /// <summary>
@@ -353,21 +373,11 @@ public class DebugSession : IDisposable
     /// </summary>
     public void StepOut(int threadId)
     {
-        lock (_stateLock)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
+        var debugger = RequireDebugger();
 
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
-
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
-
-            McpLogger.LogDebugSessionEvent(_sessionId, "StepOut", $"Thread {threadId}");
-            _debugger.StepOut(threadId);
-            _isRunning = true;
-        }
+        McpLogger.LogDebugSessionEvent(_sessionId, "StepOut", $"Thread {threadId}");
+        BeginStep(debugger);
+        debugger.StepOut(threadId);
     }
 
     /// <summary>
@@ -375,20 +385,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public async Task<EvaluationResult> EvaluateExpression(string expression, int frameId)
     {
-        ManagedDebugger? debugger;
-        lock (_stateLock)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
-
-            if (!_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Not attached to a process");
-
-            if (_debugger == null)
-                throw new InvalidOperationException("Debugger not initialized");
-
-            debugger = _debugger;
-        }
+        var debugger = RequireDebugger();
 
         // Call async methods outside the lock to avoid deadlocks
         var (result, type, variablesReference) = await debugger.Evaluate(expression, frameId);
@@ -400,35 +397,121 @@ public class DebugSession : IDisposable
     /// </summary>
     public void Detach()
     {
-        ManagedDebugger? debuggerToDispose = null;
+        lock (_stateLock)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(DebugSession));
+        }
 
+        DetachCore();
+    }
+
+    /// <summary>
+    /// Tears the debugger down without the disposed guard, so it is safe to call from Dispose
+    /// </summary>
+    private void DetachCore()
+    {
+        ManagedDebugger? debuggerToDispose;
+
+        lock (_stateLock)
+        {
+            if (_debugger == null)
+            {
+                _attachedProcessId = null;
+                return;
+            }
+
+            debuggerToDispose = _debugger;
+
+            // Unsubscribe from events
+            debuggerToDispose.OnStopped -= OnDebuggerStopped;
+            debuggerToDispose.OnStopped2 -= OnDebuggerStoppedAtLocation;
+            debuggerToDispose.OnContinued -= OnDebuggerContinued;
+            debuggerToDispose.OnExited -= OnDebuggerExited;
+            debuggerToDispose.OnOutput -= OnDebuggerOutput;
+            debuggerToDispose.OnBreakpointChanged -= OnDebuggerBreakpointChanged;
+
+            _debugger = null;
+            _attachedProcessId = null;
+            _breakpoints.Clear();
+            _lastBreakpoint = null;
+            ClearStopState();
+        }
+
+        // Detach and dispose outside the lock to avoid potential deadlocks.
+        try
+        {
+            // Dispose only tears down our own state - without Disconnect the debuggee is never
+            // released by ICorDebug and stays suspended for the rest of its life.
+            debuggerToDispose.Disconnect(terminateDebuggee: false);
+        }
+        catch (Exception ex)
+        {
+            McpLogger.LogDebugSessionError(_sessionId, "Detach", ex);
+        }
+        finally
+        {
+            debuggerToDispose.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Resolve the debugger for an operation that requires an attached process
+    /// </summary>
+    private ManagedDebugger RequireDebugger()
+    {
         lock (_stateLock)
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(DebugSession));
 
             if (!_attachedProcessId.HasValue)
-                return;
+                throw new InvalidOperationException("Not attached to a process");
 
-            debuggerToDispose = _debugger;
+            if (_debugger == null)
+                throw new InvalidOperationException("Debugger not initialized");
 
-            // Unsubscribe from events
-            if (debuggerToDispose != null)
-            {
-                debuggerToDispose.OnStopped -= OnDebuggerStopped;
-                debuggerToDispose.OnContinued -= OnDebuggerContinued;
-                debuggerToDispose.OnExited -= OnDebuggerExited;
-                debuggerToDispose.OnOutput -= OnDebuggerOutput;
-                debuggerToDispose.OnBreakpointChanged -= OnDebuggerBreakpointChanged;
-            }
-
-            _debugger = null;
-            _attachedProcessId = null;
-            _isRunning = false;
+            return _debugger;
         }
+    }
 
-        // Dispose outside the lock to avoid potential deadlocks
-        debuggerToDispose?.Dispose();
+    /// <summary>
+    /// Stepping requires a stopped process with an active frame; stepping a running one
+    /// surfaces an opaque COM failure instead of a usable error.
+    /// </summary>
+    private void BeginStep(ManagedDebugger debugger)
+    {
+        if (debugger.IsRunning)
+            throw new InvalidOperationException(
+                "Process is running. It must be stopped at a breakpoint before stepping.");
+
+        lock (_stateLock)
+        {
+            ClearStopState();
+        }
+    }
+
+    private void ClearStopState()
+    {
+        _currentLocation = null;
+        _lastStopReason = null;
+        _lastStoppedThreadId = null;
+    }
+
+    private static bool WaitFor(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (true)
+        {
+            if (condition())
+                return true;
+
+            if (DateTime.UtcNow >= deadline)
+                return false;
+
+            Thread.Sleep(PollInterval);
+        }
     }
 
     private void LogMessage(string message)
@@ -447,7 +530,7 @@ public class DebugSession : IDisposable
             _disposed = true;
         }
 
-        Detach();
+        DetachCore();
         GC.SuppressFinalize(this);
     }
 }
@@ -460,7 +543,9 @@ public record ExecutionState(
     bool IsAttached,
     int? ProcessId,
     string? CurrentLocation = null,
-    BreakpointHitInfo? LastBreakpoint = null);
+    BreakpointHitInfo? LastBreakpoint = null,
+    int? StoppedThreadId = null,
+    string? StopReason = null);
 
 /// <summary>
 /// Information about a breakpoint that was hit
