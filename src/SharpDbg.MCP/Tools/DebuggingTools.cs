@@ -30,7 +30,11 @@ public static class DebuggingTools
         _ = _processDiscovery.Value;
     }
 
-    [McpServerTool, Description("List all .NET processes currently running on the system")]
+    // Name pinned: the SDK would turn ListDotNetProcesses into list_dot_net_processes
+    [McpServerTool(Name = "list_dotnet_processes"), Description(
+        "List all .NET processes currently running on the system. owner tells you whether a process " +
+        "belongs to the user running this server: attaching is refused for 'other_user' and " +
+        "'unknown' unless SHARPDBG_ALLOW_OTHER_USER_PROCESSES is set.")]
     public static string ListDotNetProcesses()
     {
         var processes = _processDiscovery.Value.ListDotNetProcesses();
@@ -38,16 +42,25 @@ public static class DebuggingTools
         var response = new
         {
             count = processes.Count,
+            attachable_owners_only = !_configuration.AllowOtherUserProcesses,
             processes = processes.Select(p => new
             {
                 process_id = p.ProcessId,
                 process_name = p.ProcessName,
-                main_module = p.MainModule
+                main_module = p.MainModule,
+                owner = OwnerName(p.Owner)
             }).ToList()
         };
 
         return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
     }
+
+    private static string OwnerName(ProcessOwnership.Ownership owner) => owner switch
+    {
+        ProcessOwnership.Ownership.CurrentUser => "current_user",
+        ProcessOwnership.Ownership.OtherUser => "other_user",
+        _ => "unknown"
+    };
 
     [McpServerTool, Description("Attach debugger to a .NET process by process ID")]
     public static string AttachToProcess(int process_id)
@@ -56,6 +69,23 @@ public static class DebuggingTools
         {
             // Validate input
             InputValidation.ValidateProcessId(process_id);
+
+            // A debugger can read and change everything in the process it attaches to, so by default
+            // only the user's own processes are allowed. Checked before anything else looks at the
+            // process, so a refusal does not depend on what the target turns out to be.
+            var denyReason = ProcessOwnership.DenyReason(
+                ProcessOwnership.Of(process_id),
+                _configuration.AllowOtherUserProcesses);
+
+            if (denyReason != null)
+            {
+                var refusedResponse = new
+                {
+                    success = false,
+                    error = denyReason
+                };
+                return JsonSerializer.Serialize(refusedResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
 
             // Verify it's a .NET process
             if (!_processDiscovery.Value.IsDotNetProcess(process_id))

@@ -87,6 +87,21 @@ the new server until it is restarted.
 Ask the client to list .NET processes, or run `claude mcp list`. If the server does not appear, the
 path in the configuration is the first thing to check.
 
+## Attaching to other users' processes
+
+A debugger can read and change everything in the process it attaches to, so by default this server
+attaches only to processes belonging to the user it runs as. `attach_to_process` refuses anything
+else before it looks at the process at all, and `list_dotnet_processes` marks each entry with an
+`owner` of `current_user`, `other_user` or `unknown`.
+
+`unknown` is refused as well. On Windows that is what a system or elevated process looks like, since
+its token cannot be opened; treating it as your own would make the whole check decorative wherever
+the lookup does not work.
+
+Set `SHARPDBG_ALLOW_OTHER_USER_PROCESSES=true` to lift the restriction. Note that the operating
+system has its own say regardless: on Linux and macOS a normal user cannot attach to another user's
+process even with this enabled, so in practice it matters when the server runs elevated or as root.
+
 ## Breakpoints need portable PDBs
 
 A breakpoint binds through the target's symbols, so the debuggee must be built with portable PDBs
@@ -133,7 +148,7 @@ The server can be configured using environment variables. Add them to your Claud
 | `SHARPDBG_LOG_LEVEL` | Logging verbosity | `Information` | `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical` |
 | `SHARPDBG_MAX_SESSIONS` | Maximum concurrent debug sessions (future) | `1` | Positive integer |
 | `SHARPDBG_OPERATION_TIMEOUT_SECONDS` | Timeout for debugging operations | `30` | Positive integer |
-| `SHARPDBG_ALLOW_OTHER_USER_PROCESSES` | Allow attaching to processes owned by other users | `false` | `true`, `false` |
+| `SHARPDBG_ALLOW_OTHER_USER_PROCESSES` | Allow attaching to processes not owned by the current user, including ones whose owner cannot be determined | `false` | `true`, `false` |
 | `SHARPDBG_EVAL_TIMEOUT_MS` | Expression evaluation timeout in milliseconds | `5000` | ≥ 100 |
 | `SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS` | How long to wait for a breakpoint to bind before reporting it as unverified | `2000` | ≥ 100 |
 | `SHARPDBG_JUST_MY_CODE` | Restrict debugging to user code, skipping framework and third-party assemblies | `true` | `true`, `false` |
@@ -217,7 +232,9 @@ List all .NET processes currently running on the system.
 
 **Parameters:** None
 
-**Returns:** JSON array of processes with ID, name, and main module path.
+**Returns:** JSON array of processes with ID, name, main module path, and `owner`, which is
+`current_user`, `other_user` or `unknown` — see [Attaching to other users'
+processes](#attaching-to-other-users-processes).
 
 #### `attach_to_process`
 Attach the debugger to a .NET process.
