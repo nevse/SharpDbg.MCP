@@ -61,11 +61,9 @@ jobs:
       with:
         dotnet-version: '10.0.x'
 
-    # Ubuntu's Yama LSM restricts ptrace to direct children by default, which blocks
-    # ICorDebug from attaching to the debuggee the tests launch.
-    - name: Allow ptrace attach
+    - name: Show ptrace scope
       if: runner.os == 'Linux'
-      run: sudo sysctl -w kernel.yama.ptrace_scope=0
+      run: cat /proc/sys/kernel/yama/ptrace_scope
 
     - name: Restore dependencies
       run: dotnet restore
