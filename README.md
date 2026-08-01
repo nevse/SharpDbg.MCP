@@ -573,6 +573,24 @@ dotnet run --project src/SharpDbg.MCP/SharpDbg.MCP.csproj
 
 ## Troubleshooting
 
+### Error responses
+
+Every tool reports a failure the same way:
+
+```json
+{
+  "success": false,
+  "error": "Handle has been disposed. (0x80131C01)",
+  "explanation": "The debugger is holding a handle it has already released, which an earlier evaluation ... This never recovers on retry: the debuggee stays suspended until detach_from_process releases it, after which you can attach again."
+}
+```
+
+`error` is whatever the debugger said, kept verbatim. `explanation` says what the failure means and
+what to do about it, for the `CORDBG_E_*` results the debugger raises — a process that has exited,
+an operation that needs the debuggee stopped, a variable that is not live at this instruction, a
+frame id from an earlier stop, another debugger already attached. It is `null` for failures that are
+not the debugger's, such as invalid arguments.
+
 ### Server Not Appearing in Claude Desktop
 
 1. **Check configuration path** - Verify the path in `claude_desktop_config.json` is absolute and correct

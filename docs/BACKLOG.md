@@ -144,11 +144,6 @@ self-contained apps are invisible. The diagnostic IPC channel that `dotnet-trace
 `ListDotNetProcesses` also calls `GetProcessById` again for every process it already enumerated.
 **Effort: M**
 
-### COM errors leak to callers
-`CORDBG_E_SUPERFLOUS_CONTINUE` is handled, but every other `CORDBG_E_*` still reaches the client as
-raw COM exception text. Map the known HRESULTs to explanations.
-**Effort: S**
-
 ### Tools are static, which blocks testing
 `DebuggingTools` is a static class with `Lazy` singletons even though `Program` already builds a DI
 container. Instance tools with injected dependencies would let the tool layer be tested directly
