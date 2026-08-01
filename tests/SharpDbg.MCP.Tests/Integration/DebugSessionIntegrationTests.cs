@@ -488,6 +488,73 @@ public sealed class DebugSessionIntegrationTests
             "Debuggee stayed suspended after detach");
     }
 
+    [TestMethod]
+    public async Task WaitForStop_WhileRunning_ReturnsTheBreakpointStopWithoutPolling()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        WaitForStop(session);
+
+        // Resume and wait for the next hit in a single call
+        Assert.IsTrue(session.Continue());
+
+        var state = session.WaitForStop(StopTimeout);
+
+        Assert.IsNotNull(state, "WaitForStop timed out instead of reporting the next breakpoint hit");
+        Assert.AreEqual("breakpoint", state.StopReason);
+        Assert.AreEqual($"{TestPaths.TestAppSource}:{line}", state.CurrentLocation);
+        Assert.IsNotNull(state.StoppedThreadId, "Callers need the stopped thread to request a stack trace");
+        Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee kept running while reported stopped");
+    }
+
+    [TestMethod]
+    public async Task WaitForStop_WhenAlreadyStopped_ReturnsImmediately()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        WaitForStop(session);
+
+        var elapsed = Stopwatch.StartNew();
+        var state = session.WaitForStop(StopTimeout);
+        elapsed.Stop();
+
+        Assert.IsNotNull(state);
+        Assert.IsLessThan(TimeSpan.FromSeconds(1), elapsed.Elapsed, "An existing stop should not be waited for");
+    }
+
+    /// <summary>
+    /// A process that is running and never stops has to come back as "not stopped" rather than as
+    /// a stop with no reason, or a caller would try to step a running process.
+    /// </summary>
+    [TestMethod]
+    public async Task WaitForStop_WhenNothingStops_ReportsStillRunning()
+    {
+        var timeout = TimeSpan.FromMilliseconds(500);
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var elapsed = Stopwatch.StartNew();
+        var state = session.WaitForStop(timeout);
+        elapsed.Stop();
+
+        Assert.IsNull(state, "No breakpoint was set, so nothing should have stopped");
+        Assert.IsGreaterThan(timeout / 2, elapsed.Elapsed, "WaitForStop returned without waiting");
+        Assert.IsLessThan(timeout * 6, elapsed.Elapsed, "WaitForStop ignored its timeout");
+    }
+
     /// <summary>
     /// Regression: a breakpoint set right after attaching can be answered unverified because the
     /// target module's symbols are not processed yet, and it binds a moment later on the

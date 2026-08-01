@@ -213,4 +213,38 @@ public class InputValidationTests
         }
         catch (ArgumentException) { }
     }
+
+    [TestMethod]
+    public void ValidateWaitTimeout_ValidTimeouts_DoesNotThrow()
+    {
+        InputValidation.ValidateWaitTimeout(1);
+        InputValidation.ValidateWaitTimeout(10_000);
+        InputValidation.ValidateWaitTimeout(300_000);
+    }
+
+    [TestMethod]
+    public void ValidateWaitTimeout_InvalidTimeouts_ThrowsArgumentException()
+    {
+        try
+        {
+            InputValidation.ValidateWaitTimeout(0);
+            Assert.Fail("Expected ArgumentException for timeout 0");
+        }
+        catch (ArgumentException) { }
+
+        try
+        {
+            InputValidation.ValidateWaitTimeout(-1);
+            Assert.Fail("Expected ArgumentException for negative timeout");
+        }
+        catch (ArgumentException) { }
+
+        // A wait longer than the client's own request timeout would leave the caller with nothing
+        try
+        {
+            InputValidation.ValidateWaitTimeout(300_001);
+            Assert.Fail("Expected ArgumentException for a timeout past the maximum");
+        }
+        catch (ArgumentException) { }
+    }
 }

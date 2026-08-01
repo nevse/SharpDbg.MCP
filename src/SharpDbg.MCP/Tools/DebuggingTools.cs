@@ -92,6 +92,65 @@ public static class DebuggingTools
         }
     }
 
+    [McpServerTool, Description(
+        "Wait for the debuggee to stop and return the same fields as get_process_status. Blocks " +
+        "until a breakpoint is hit, a step completes, the process is paused or throws, or the " +
+        "process exits, and gives up after timeout_ms (default 10000, maximum 300000). " +
+        "Use this after continue_execution or a step instead of polling get_process_status in a " +
+        "loop. stopped=false means the process was still running when the wait expired, which is " +
+        "not an error - call again to keep waiting. stop_reason 'exited' means the process is gone " +
+        "and cannot be stepped or continued.")]
+    public static string WaitForStop(int timeout_ms = 10000)
+    {
+        try
+        {
+            InputValidation.ValidateWaitTimeout(timeout_ms);
+
+            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+
+            if (!session.IsAttached)
+            {
+                var notAttachedResponse = new
+                {
+                    success = false,
+                    error = "Not attached to a process. Use AttachToProcess first."
+                };
+                return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            var state = session.WaitForStop(TimeSpan.FromMilliseconds(timeout_ms));
+
+            var response = new
+            {
+                success = true,
+                stopped = state != null,
+                timeout_ms,
+                current_location = state?.CurrentLocation,
+                stop_reason = state?.StopReason,
+                // The thread to pass to get_stack_trace/step_over/step_into/step_out while stopped
+                stopped_thread_id = state?.StoppedThreadId,
+                last_breakpoint = state?.LastBreakpoint == null ? null : new
+                {
+                    id = state.LastBreakpoint.BreakpointId,
+                    file_path = state.LastBreakpoint.FilePath,
+                    line = state.LastBreakpoint.Line,
+                    thread_id = state.LastBreakpoint.ThreadId
+                }
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            var errorResponse = new
+            {
+                success = false,
+                error = ex.Message
+            };
+            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
     [McpServerTool, Description("Get the status of the current debug session")]
     public static string GetProcessStatus()
     {

@@ -189,6 +189,10 @@ public class DebugSession : IDisposable
         {
             _isRunning = false;
             ClearStopState();
+
+            // A dead process is not running, so it satisfies WaitForStop. Naming the reason keeps
+            // that from looking like a stop the caller can step or continue from.
+            _lastStopReason = "exited";
         }
 
         McpLogger.LogDebugSessionEvent(_sessionId, "Exited", "Process terminated");
@@ -507,6 +511,32 @@ public class DebugSession : IDisposable
         McpLogger.LogDebugSessionEvent(_sessionId, "Continue", "Resuming execution");
         Resume(debugger.HandleContinueRequest);
         return true;
+    }
+
+    /// <summary>
+    /// Blocks until the debuggee stops - a breakpoint hit, a completed step, a pause, an exception
+    /// or the process exiting - and returns the state it stopped in, or null if it is still running
+    /// when the timeout expires. Callers otherwise have to poll GetExecutionState in a loop, which
+    /// costs an MCP client a round trip per poll.
+    /// </summary>
+    public ExecutionState? WaitForStop(TimeSpan timeout)
+    {
+        RequireDebugger();
+
+        var stopped = WaitFor(() =>
+        {
+            lock (_stateLock)
+            {
+                return !_isRunning;
+            }
+        }, timeout);
+
+        var state = GetExecutionState();
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "WaitForStop",
+            stopped ? $"Stopped: {state.StopReason ?? "unknown"}" : $"Still running after {timeout}");
+
+        return stopped ? state : null;
     }
 
     /// <summary>
