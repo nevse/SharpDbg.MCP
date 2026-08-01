@@ -3,12 +3,6 @@
 Prioritized by how much each item blocks someone actually debugging with this server.
 Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more.
 
-## P0 — broken or untrustworthy today
-
-### `Test1.cs` is an empty placeholder
-Delete it. It inflates the test count without asserting anything.
-**Effort: S**
-
 ## P1 — real functional gaps
 
 ### Expanding an evaluated member suspends the debuggee for good
@@ -51,17 +45,13 @@ have to be registered with the variable manager the way scope members already ar
 `EvaluateExpression_DoesNotYetYieldAnExpandableReference` pins the current behaviour.
 **Effort: M (upstream)**
 
-### Callers must poll to notice a stop
-After `continue_execution` the only way to learn that a breakpoint was hit is to call
-`get_process_status` in a loop, which costs an LLM client a turn per poll. A blocking
-`wait_for_stop(timeout_ms)` would collapse that to a single call.
-**Effort: S**
-
 ### README does not match the server
-Tools are documented in PascalCase (`AttachToProcess`) but the MCP SDK exposes them snake_cased
-(`attach_to_process`), so anything scripted from the README fails with `Unknown tool`. The README
-also does not mention that breakpoints need portable PDBs next to the target assembly, which is the
-most common reason a breakpoint stays unverified.
+The tool list is missing `wait_for_stop`, `remove_breakpoint`, `list_breakpoints` and
+`expand_variable`, `set_breakpoint` says nothing about its conditions, and the server's own error
+messages name tools in PascalCase (`Use AttachToProcess first`) even though the SDK exposes them
+snake_cased, so a caller that follows the message gets `Unknown tool`. Nothing mentions that
+breakpoints need portable PDBs next to the target assembly, which is the most common reason a
+breakpoint stays unverified.
 **Effort: S**
 
 ## P2 — capabilities the current package already supports

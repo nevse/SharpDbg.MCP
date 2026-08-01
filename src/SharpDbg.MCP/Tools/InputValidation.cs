@@ -80,6 +80,22 @@ public static class InputValidation
                 nameof(hitCondition));
     }
 
+    /// <summary>
+    /// Validates a blocking wait. The upper bound keeps a tool call from outliving the client's
+    /// own request timeout, which would leave the caller with no result at all.
+    /// </summary>
+    public static void ValidateWaitTimeout(int timeoutMs)
+    {
+        const int MaxTimeoutMs = 300_000;
+
+        if (timeoutMs <= 0)
+            throw new ArgumentException($"Timeout must be positive, got: {timeoutMs}", nameof(timeoutMs));
+
+        if (timeoutMs > MaxTimeoutMs)
+            throw new ArgumentException(
+                $"Timeout must be at most {MaxTimeoutMs}ms, got: {timeoutMs}", nameof(timeoutMs));
+    }
+
     public static void ValidateExpression(string expression)
     {
         if (string.IsNullOrWhiteSpace(expression))
