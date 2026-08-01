@@ -329,6 +329,121 @@ public sealed class DebugSessionIntegrationTests
         Assert.AreEqual(">=3", session.ListBreakpoints()[0].HitCondition);
     }
 
+    [TestMethod]
+    public async Task ExpandVariable_WalksIntoTheMembersOfAnObject()
+    {
+        var line = TestPaths.FindMarkerLine("EXPAND-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        var state = WaitForStop(session);
+
+        var frames = session.GetStackTrace(state.StoppedThreadId!.Value);
+        var variables = await session.GetVariables(frames[0].Id);
+
+        var point = variables.SingleOrDefault(v => v.Name == "point");
+        Assert.IsNotNull(point, $"Expected a 'point' local, got: {string.Join(", ", variables.Select(v => v.Name))}");
+        Assert.IsGreaterThan(0, point.VariablesReference, "An object should be expandable");
+
+        var members = await session.ExpandVariable(point.VariablesReference);
+        var x = members.SingleOrDefault(m => m.Name == "X");
+        var y = members.SingleOrDefault(m => m.Name == "Y");
+
+        Assert.IsNotNull(x, $"Expected member X, got: {string.Join(", ", members.Select(m => m.Name))}");
+        Assert.IsNotNull(y);
+
+        // Point is built as (next, label.Length), so X must agree with the local it came from
+        var next = variables.Single(v => v.Name == "next");
+        Assert.AreEqual(next.Value, x.Value);
+    }
+
+    /// <summary>
+    /// Pins a SharpDbg 0.1.7 defect. Expanding a member whose value needs function evaluation - a
+    /// record's EqualityContract, which is a RuntimeType - leaves the variable manager holding a
+    /// disposed handle. Every later Continue then fails with 0x80131C01 and the debuggee stays
+    /// suspended for good; only detaching releases it. When this test starts failing the package
+    /// has fixed it and the warning on ExpandVariable can go.
+    /// </summary>
+    [TestMethod]
+    public async Task ExpandVariable_MemberNeedingEvaluation_PoisonsLaterContinue()
+    {
+        var line = TestPaths.FindMarkerLine("EXPAND-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        var state = WaitForStop(session);
+
+        var frames = session.GetStackTrace(state.StoppedThreadId!.Value);
+        var variables = await session.GetVariables(frames[0].Id);
+        var point = variables.Single(v => v.Name == "point");
+
+        var members = await session.ExpandVariable(point.VariablesReference);
+        var needsEvaluation = members.Single(m => m.VariablesReference > 0);
+        await session.ExpandVariable(needsEvaluation.VariablesReference);
+
+        Exception? failure = null;
+        try
+        {
+            session.Continue();
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+
+        Assert.IsNotNull(failure, "Continue unexpectedly succeeded after the poisoning expansion");
+        StringAssert.Contains(failure.Message, "0x80131C01");
+        Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee should be stuck");
+
+        // Detaching is the only way out, and it must still work
+        session.Detach();
+        Assert.IsGreaterThan(
+            0,
+            debuggee.CountOutputDuring(ObservationWindow),
+            "Detach failed to release a debuggee stuck by the disposed handle");
+    }
+
+    /// <summary>
+    /// Pins a SharpDbg 0.1.7 limitation: ManagedDebugger.Evaluate hardcodes variablesReference to
+    /// 0 on every path, so an evaluated object cannot be expanded - only variables returned by
+    /// GetVariables carry a usable reference. When this test starts failing the package has gained
+    /// the capability, and ExpandVariable's description should stop excluding it.
+    /// </summary>
+    [TestMethod]
+    public async Task EvaluateExpression_DoesNotYetYieldAnExpandableReference()
+    {
+        var line = TestPaths.FindMarkerLine("EXPAND-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        var state = WaitForStop(session);
+
+        var frames = session.GetStackTrace(state.StoppedThreadId!.Value);
+        var evaluated = await session.EvaluateExpression("point", frames[0].Id);
+
+        Assert.AreEqual(0, evaluated.VariablesReference);
+    }
+
+    [TestMethod]
+    public async Task ExpandVariable_UnknownReference_Throws()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(() => session.ExpandVariable(987654));
+    }
+
     /// <summary>
     /// Regression: continuing an already-running process threw CORDBG_E_SUPERFLOUS_CONTINUE
     /// straight out of COM instead of being reported as a no-op.

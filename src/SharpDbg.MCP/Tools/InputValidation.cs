@@ -23,6 +23,13 @@ public static class InputValidation
             throw new ArgumentException($"Frame ID must be positive, got: {frameId}", nameof(frameId));
     }
 
+    public static void ValidateVariablesReference(int variablesReference)
+    {
+        if (variablesReference <= 0)
+            throw new ArgumentException(
+                $"Variables reference must be positive, got: {variablesReference}", nameof(variablesReference));
+    }
+
     public static void ValidateFilePath(string filePath)
     {
         if (string.IsNullOrWhiteSpace(filePath))
