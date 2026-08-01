@@ -147,7 +147,7 @@ public sealed class DebugSessionIntegrationTests
         Assert.IsTrue(b.Verified, $"Second breakpoint not verified: {b.Message}");
 
         var listed = session.ListBreakpoints();
-        Assert.AreEqual(2, listed.Count, "Both breakpoints in the same file should survive");
+        Assert.HasCount(2, listed, "Both breakpoints in the same file should survive");
         CollectionAssert.AreEquivalent(
             new[] { first, second },
             listed.Select(x => x.Line).ToArray());
@@ -187,7 +187,7 @@ public sealed class DebugSessionIntegrationTests
         WaitForStop(session);
 
         Assert.IsTrue(session.RemoveBreakpoint(breakpoint.Id));
-        Assert.AreEqual(0, session.ListBreakpoints().Count);
+        Assert.IsEmpty(session.ListBreakpoints());
 
         session.Continue();
 
@@ -216,7 +216,7 @@ public sealed class DebugSessionIntegrationTests
         Assert.IsTrue(session.RemoveBreakpoint(a.Id));
 
         var listed = session.ListBreakpoints();
-        Assert.AreEqual(1, listed.Count);
+        Assert.HasCount(1, listed);
         Assert.AreEqual(second, listed[0].Line);
         Assert.IsTrue(listed[0].Verified, $"Remaining breakpoint lost its binding: {listed[0].Message}");
 
@@ -243,7 +243,7 @@ public sealed class DebugSessionIntegrationTests
 
         await session.Attach(debuggee.ProcessId);
 
-        Assert.AreEqual(0, session.ListBreakpoints().Count);
+        Assert.IsEmpty(session.ListBreakpoints());
     }
 
     /// <summary>
