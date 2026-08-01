@@ -69,6 +69,7 @@ public class DebugSession : IDisposable
         set
         {
             bool resumeNow;
+            int threadId;
 
             lock (_stateLock)
             {
@@ -79,12 +80,23 @@ public class DebugSession : IDisposable
                     && !_isRunning
                     && _lastStopReason == ExceptionStopReason
                     && _attachedProcessId.HasValue;
+
+                threadId = _lastStoppedThreadId ?? 0;
+
+                if (resumeNow)
+                {
+                    // Unpublished for the same reason a new one would be: in this mode an exception
+                    // stop is not something a caller should be able to see
+                    _exceptionsIgnored++;
+                    _isRunning = true;
+                    ClearStopState();
+                }
             }
 
             McpLogger.LogDebugSessionEvent(_sessionId, "ExceptionBreakMode", value.ToString());
 
             if (resumeNow)
-                ResumeIgnoredException(_lastStoppedThreadId ?? 0);
+                ResumeIgnoredException(threadId);
         }
     }
 
@@ -182,20 +194,36 @@ public class DebugSession : IDisposable
 
     private void OnDebuggerStopped(int threadId, string reason)
     {
+        bool ignoring;
+
         lock (_stateLock)
         {
-            _isRunning = false;
-            _lastStoppedThreadId = threadId;
-            _lastStopReason = reason;
-
             if (reason == ExceptionStopReason)
                 _exceptionsSeen++;
+
+            // An ignored exception is never published as a stop. Reporting it and taking it back a
+            // moment later would let a caller see - and act on - a stop the mode promised to hide.
+            ignoring = reason == ExceptionStopReason
+                && _exceptionBreakMode == ExceptionBreakMode.Never
+                && _attachedProcessId.HasValue;
+
+            if (ignoring)
+            {
+                _exceptionsIgnored++;
+            }
+            else
+            {
+                _isRunning = false;
+                _lastStoppedThreadId = threadId;
+                _lastStopReason = reason;
+            }
         }
 
-        McpLogger.LogDebugSessionEvent(_sessionId, "Stopped", $"Thread {threadId}: {reason}");
-        LogMessage($"Stopped on thread {threadId}: {reason}");
+        McpLogger.LogDebugSessionEvent(_sessionId, ignoring ? "ExceptionIgnored" : "Stopped",
+            $"Thread {threadId}: {reason}");
+        LogMessage($"{(ignoring ? "Ignored exception" : "Stopped")} on thread {threadId}: {reason}");
 
-        if (reason == ExceptionStopReason && ExceptionBreakMode == ExceptionBreakMode.Never)
+        if (ignoring)
             ResumeIgnoredException(threadId);
     }
 
@@ -205,12 +233,11 @@ public class DebugSession : IDisposable
     /// suspends on each one. In Never mode the session resumes them itself.
     /// The resume is queued rather than run here: this is the debugger's callback thread, and
     /// continuing inline would nest a stop inside a stop for as long as the exceptions keep coming.
+    /// It goes straight to the debugger rather than through Continue, because the session never
+    /// published this stop - as far as anything outside is concerned the process never stopped.
     /// </summary>
     private void ResumeIgnoredException(int threadId)
     {
-        lock (_stateLock)
-            _exceptionsIgnored++;
-
         _ = Task.Run(() =>
         {
             // The resume must not overlap a teardown: Disconnect while a Continue is in flight
@@ -219,16 +246,29 @@ public class DebugSession : IDisposable
             {
                 try
                 {
-                    if (!IsAttached)
-                        return;
+                    ManagedDebugger? debugger;
 
-                    Continue();
+                    lock (_stateLock)
+                        debugger = _attachedProcessId.HasValue ? _debugger : null;
+
+                    debugger?.HandleContinueRequest();
                 }
                 catch (Exception ex)
                 {
-                    // Detaching or exiting while an ignored exception was in flight is not a failure
+                    // The process really is suspended now, so say so rather than leaving the session
+                    // claiming it runs - that is the one thing worse than an unwanted stop
+                    lock (_stateLock)
+                    {
+                        if (_attachedProcessId.HasValue)
+                        {
+                            _isRunning = false;
+                            _lastStoppedThreadId = threadId;
+                            _lastStopReason = ExceptionStopReason;
+                        }
+                    }
+
                     McpLogger.LogDebugSessionEvent(_sessionId, "ExceptionIgnored",
-                        $"Could not resume thread {threadId}: {ex.Message}");
+                        $"Could not resume thread {threadId}, reporting the stop instead: {ex.Message}");
                 }
             }
         });
