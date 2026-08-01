@@ -37,6 +37,33 @@ in place - `_debugger` and `_variableManager` are both private, so a local worka
 reflection**
 
 
+### A successful function evaluation leaves the debuggee unable to resume
+Any evaluation that runs code in the target - a property getter, `ToString()`, any method call -
+leaves the process needing a second `Continue` before it actually resumes, and a third then fails
+with `CORDBG_E_SUPERFLOUS_CONTINUE`. The first `Continue` reports success, so the process looks
+running while it is suspended and nothing in the API says otherwise.
+
+Measured on 0.1.7 by comparing four cases:
+
+| what happened before the continue | continues needed |
+|---|---|
+| exception stop, no evaluation | 1, clean |
+| breakpoint stop, evaluation that failed | 1, clean |
+| breakpoint stop, `point.ToString()` | 2, then `SUPERFLOUS_CONTINUE` |
+| exception stop, `ManagedDebugger.ExceptionInfo` (4 property reads) | never resumed |
+
+This is the same defect as (2) above, but it is not limited to expanding variables: it reaches
+`evaluate_expression`, which ships today, and it is why `get_exception_info` was not added - the
+upstream `ExceptionInfo` reads Message, HResult, Source and StackTrace through property getters, so
+retrieving exception details costs the session. `expand_variable` and `evaluate_expression` now warn
+about it. Worth adding to https://github.com/MattParkerDev/sharpdbg/issues/24, which currently
+describes the narrower variable-expansion case.
+
+A local workaround would mean issuing extra continues after an evaluation, but the number needed is
+not predictable - two was enough after one evaluation, not after four - and guessing high throws
+`SUPERFLOUS_CONTINUE`, so there is nothing safe to do here beyond the warnings.
+**Effort: M upstream**
+
 ### Evaluated objects cannot be expanded
 `ManagedDebugger.Evaluate` hardcodes `variablesReference` to 0 on every path, so the result of
 `evaluate_expression` is only ever a string — unlike `get_variables`, whose entries can be walked
@@ -52,10 +79,17 @@ have to be registered with the variable manager the way scope members already ar
 (`BreakpointInfo.IsFunctionBreakpoint`). Useful when the caller knows a method name but not a path.
 **Effort: M**
 
-### Break on exception
-No way to stop when an exception is thrown, which is one of the main reasons to attach a debugger
-at all. `ManagedDebugger` already raises `OnStopped` with reason `"exception"`.
-**Effort: M**
+### Exception stops cannot be narrowed down
+`set_exception_break_mode` can only turn first-chance exception stops on or off wholesale. Two
+things are missing and both need upstream work:
+
+- **Unhandled only**, which is what a debugger normally defaults to. `HandleException` discards the
+  callback's event type, so a stop carries no way to tell whether the program will handle the
+  exception.
+- **Filtering by exception type**, which would need the type at the moment of the stop, and reading
+  it means running code in the target - see the evaluation defect above.
+
+**Effort: M upstream, S here once the type is available**
 
 ### Surface decompiled source
 `OnStopped2` carries a `DecompiledSourceInfo` that is currently discarded, so stopping in code
@@ -63,6 +97,34 @@ without PDBs reports no location at all.
 **Effort: M**
 
 ## P2 — robustness and clarity
+
+### The test host segfaults in mscordbi about one run in six
+A full test run occasionally dies mid-run with `Test Run Aborted` and no managed error - the log
+stops mid-line, which is a native crash. The macOS crash reports name it:
+
+```
+SIGSEGV in libmscordbi.dylib
+  ShimProcess::QueueFakeAssemblyAndModuleEvent(ICorDebugAssembly*)
+  ShimProcess::QueueFakeAttachEvents()
+  ShimProcess::QueueFakeAttachEventsIfNeeded(bool)
+  CordbRCEventThread::FlushQueuedEvents(CordbProcess*)
+  CordbRCEventThread::ThreadProc()
+```
+
+That is the CLR debugger shim replaying the synthetic assembly and module load events for a fresh
+attach, on its own event thread - the same replay whose timing the breakpoint bind wait works
+around. Nothing of ours is on the stack.
+
+Not caused by any recent change: reproduced at 26b4626 as well, roughly one run in six on macOS
+arm64 with .NET 10.0.0, while the integration tests attach and detach around twenty times in a
+single test host. A long-lived server that attaches repeatedly could hit it too, but one attach per
+session makes it far less likely there.
+
+Next steps would be to check whether it also happens on Linux and Windows, to see whether spacing
+out attaches or forcing a GC between sessions changes the rate, and to report it to dotnet/runtime
+with a reduced repro. Until then it will show up as an occasional red CI run that passes on re-run.
+**Effort: M to investigate**
+
 
 ### Multi-session support is dead code
 `DebugSessionManager.CreateSession/GetSession/CloseSession` are never called; every tool goes
