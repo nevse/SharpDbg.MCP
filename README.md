@@ -293,6 +293,11 @@ Close a session, detaching from its process if it is still attached.
 #### `list_dotnet_processes`
 List all .NET processes currently running on the system.
 
+A process is recognised by the diagnostic IPC endpoint the runtime publishes — the same thing
+`dotnet-trace ps` uses — so a self-contained or single-file app is found even though nothing in its
+name says .NET. Processes started with diagnostics switched off publish no endpoint and are matched on
+name and loaded modules instead.
+
 **Parameters:** None
 
 **Returns:** JSON array of processes with ID, name, main module path, and `owner`, which is

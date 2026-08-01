@@ -1,11 +1,15 @@
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 
 namespace SharpDbg.MCP.Debugging;
 
 /// <summary>
-/// Discovers .NET processes running on the system
+/// Discovers .NET processes running on the system.
+/// A process is recognised by the diagnostic IPC endpoint the runtime publishes, which is exact and
+/// says nothing about what the executable is called - so a self-contained or single-file app is found
+/// as readily as one launched through `dotnet`. Matching on the process name and loaded modules is
+/// kept as a fallback, because a process started with diagnostics switched off publishes no endpoint
+/// while still being perfectly debuggable.
 /// </summary>
 public class ProcessDiscovery
 {
@@ -18,13 +22,15 @@ public class ProcessDiscovery
 
         try
         {
-            var allProcesses = Process.GetProcesses();
+            var endpoints = DiagnosticEndpoints.Enumerate();
 
-            foreach (var process in allProcesses)
+            // One enumeration, and the Process objects it hands back are the ones used to read the
+            // name and the main module: asking the operating system again per candidate was pure cost
+            foreach (var process in Process.GetProcesses())
             {
                 try
                 {
-                    if (IsDotNetProcess(process.Id))
+                    if (IsDotNetProcess(process, endpoints))
                     {
                         dotnetProcesses.Add(new ProcessInfo(
                             process.Id,
@@ -64,46 +70,54 @@ public class ProcessDiscovery
         {
             using var process = Process.GetProcessById(processId);
 
-            // First, check the process name for common .NET runtime patterns
-            var processName = process.ProcessName?.ToLowerInvariant();
-            if (processName != null)
-            {
-                if (processName.Contains("dotnet") ||
-                    processName.Contains("testhost") ||
-                    processName == "vstest.console" ||
-                    processName.EndsWith(".dll"))
-                {
-                    return true;
-                }
-            }
-
-            // Try to check modules (may fail on macOS/Linux without permissions)
-            try
-            {
-                foreach (ProcessModule module in process.Modules)
-                {
-                    var moduleName = module.ModuleName?.ToLowerInvariant();
-                    if (moduleName != null &&
-                        (moduleName.Contains("coreclr") ||
-                         moduleName.Contains("clr.dll") ||
-                         moduleName.Contains("libcoreclr")))
-                    {
-                        return true;
-                    }
-                }
-            }
-            catch (Exception ex) when (ex is UnauthorizedAccessException or PlatformNotSupportedException
-                                           or Win32Exception)
-            {
-                // Modules cannot be enumerated without being able to open the process: permissions on
-                // macOS and Linux, "Unable to enumerate the process modules" as a Win32Exception on
-                // Windows. Fall back to the process name check.
-            }
+            return IsDotNetProcess(process, DiagnosticEndpoints.Enumerate());
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
         {
             // Process doesn't exist or we can't access it
             return false;
+        }
+    }
+
+    private static bool IsDotNetProcess(Process process, Dictionary<int, long> endpoints)
+    {
+        // Exact: the runtime published an endpoint for this very process
+        if (DiagnosticEndpoints.Published(endpoints, process))
+            return true;
+
+        // A process with diagnostics disabled publishes nothing, so fall back to what it looks like
+        var processName = process.ProcessName?.ToLowerInvariant();
+        if (processName != null)
+        {
+            if (processName.Contains("dotnet") ||
+                processName.Contains("testhost") ||
+                processName == "vstest.console" ||
+                processName.EndsWith(".dll"))
+            {
+                return true;
+            }
+        }
+
+        try
+        {
+            foreach (ProcessModule module in process.Modules)
+            {
+                var moduleName = module.ModuleName?.ToLowerInvariant();
+                if (moduleName != null &&
+                    (moduleName.Contains("coreclr") ||
+                     moduleName.Contains("clr.dll") ||
+                     moduleName.Contains("libcoreclr")))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or PlatformNotSupportedException
+                                       or Win32Exception)
+        {
+            // Modules cannot be enumerated without being able to open the process: permissions on
+            // macOS and Linux, "Unable to enumerate the process modules" as a Win32Exception on
+            // Windows. There is nothing else left to check.
         }
 
         return false;
@@ -118,7 +132,7 @@ public class ProcessDiscovery
         {
             using var process = Process.GetProcessById(processId);
 
-            if (!IsDotNetProcess(processId))
+            if (!IsDotNetProcess(process, DiagnosticEndpoints.Enumerate()))
                 return null;
 
             return new ProcessInfo(
@@ -141,7 +155,7 @@ public class ProcessDiscovery
         }
     }
 
-    private string? GetMainModulePath(Process process)
+    private static string? GetMainModulePath(Process process)
     {
         try
         {
