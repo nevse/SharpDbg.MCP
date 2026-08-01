@@ -29,7 +29,8 @@ Two defects have no test watching them:
 - **4** is hidden by `DebugSession.RetryWhileModulesLoad`. To check it, look at whether
   `ManagedDebugger._modules` is still an unguarded `Dictionary`; if it is guarded, delete the retry.
 - **5** and **7** are races that show up as an occasional stuck or aborted test run rather than a
-  reproducible failure.
+  reproducible failure. When **7** is fixed, delete the retry loop in the `Integration tests` step of
+  `.github/workflows/ci.yml`, which exists only because of it.
 
 ## SharpDbg (https://github.com/MattParkerDev/sharpdbg, MIT)
 
