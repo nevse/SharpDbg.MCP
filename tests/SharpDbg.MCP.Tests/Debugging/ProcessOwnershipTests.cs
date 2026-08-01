@@ -75,6 +75,20 @@ public class ProcessOwnershipTests
     }
 
     /// <summary>
+    /// Regression: on Windows, reading the modules of a process that cannot be opened throws
+    /// Win32Exception rather than UnauthorizedAccessException, which no catch filter covered, so a
+    /// single unreadable process - a system or other user's one, of which there are always some -
+    /// made the whole listing throw.
+    /// </summary>
+    [TestMethod]
+    public void ListDotNetProcesses_DoesNotThrowOnProcessesItCannotOpen()
+    {
+        var processes = new ProcessDiscovery().ListDotNetProcesses();
+
+        Assert.IsNotEmpty(processes, "This test host is a .NET process, so the list cannot be empty");
+    }
+
+    /// <summary>
     /// The process list is what a caller picks a pid from, so it has to carry the ownership: our own
     /// test host is a .NET process and must be listed as ours.
     /// </summary>
