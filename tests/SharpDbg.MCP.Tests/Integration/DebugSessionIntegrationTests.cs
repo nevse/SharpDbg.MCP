@@ -363,14 +363,16 @@ public sealed class DebugSessionIntegrationTests
     }
 
     /// <summary>
-    /// Pins a SharpDbg 0.1.7 defect. Expanding a member whose value needs function evaluation - a
-    /// record's EqualityContract, which is a RuntimeType - leaves the variable manager holding a
-    /// disposed handle. Every later Continue then fails with 0x80131C01 and the debuggee stays
-    /// suspended for good; only detaching releases it. When this test starts failing the package
-    /// has fixed it and the warning on ExpandVariable can go.
+    /// Pins what is left of sharpdbg#24 after the fix in 0.1.8. Expanding a member whose value needs
+    /// function evaluation - a record's EqualityContract, which is a RuntimeType - no longer leaves a
+    /// disposed handle behind, so Continue succeeds instead of failing with 0x80131C01. But the
+    /// evaluation still leaves the process needing a second Continue, and the first one reports
+    /// success, so a caller is told the debuggee runs while it is suspended.
+    /// When this test starts failing the package has fixed that too, and the warnings on
+    /// expand_variable and evaluate_expression can go.
     /// </summary>
     [TestMethod]
-    public async Task ExpandVariable_MemberNeedingEvaluation_PoisonsLaterContinue()
+    public async Task ExpandVariable_MemberNeedingEvaluation_StillNeedsASecondContinue()
     {
         var line = TestPaths.FindMarkerLine("EXPAND-TARGET");
 
@@ -387,28 +389,26 @@ public sealed class DebugSessionIntegrationTests
 
         var members = await session.ExpandVariable(point.VariablesReference);
         var needsEvaluation = members.Single(m => m.VariablesReference > 0);
-        await session.ExpandVariable(needsEvaluation.VariablesReference);
+        var deeper = await session.ExpandVariable(needsEvaluation.VariablesReference);
 
-        Exception? failure = null;
-        try
-        {
-            session.Continue();
-        }
-        catch (Exception ex)
-        {
-            failure = ex;
-        }
+        // The expansion itself works, and used to be what poisoned the session
+        Assert.IsNotEmpty(deeper);
 
-        Assert.IsNotNull(failure, "Continue unexpectedly succeeded after the poisoning expansion");
-        StringAssert.Contains(failure.Message, "0x80131C01");
-        Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee should be stuck");
+        Assert.IsTrue(session.Continue(), "Continue no longer fails after an evaluated expansion");
+        Assert.AreEqual(
+            0,
+            debuggee.CountOutputDuring(ObservationWindow),
+            "The debuggee resumed on the first continue, so the imbalance is fixed - see the summary");
 
-        // Detaching is the only way out, and it must still work
+        // Which leaves the session claiming to run while the process is suspended
+        Assert.IsTrue(session.GetExecutionState().IsRunning);
+
+        // Detaching still releases it, as it did before
         session.Detach();
         Assert.IsGreaterThan(
             0,
             debuggee.CountOutputDuring(ObservationWindow),
-            "Detach failed to release a debuggee stuck by the disposed handle");
+            "Detach failed to release a debuggee left suspended by the evaluation");
     }
 
     /// <summary>

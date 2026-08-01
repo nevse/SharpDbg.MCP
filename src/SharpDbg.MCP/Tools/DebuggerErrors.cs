@@ -35,11 +35,11 @@ public static partial class DebuggerErrors
             "get_process_status before continuing. Note that a preceding expression evaluation can " +
             "leave the process suspended while the debugger considers it running.",
 
+        // Fixed in SharpDbg 0.1.8, kept because the explanation is what makes it recognisable if a
+        // handle is ever released twice again
         [Cor.CORDBG_E_HANDLE_HAS_BEEN_DISPOSED] =
-            "The debugger is holding a handle it has already released, which an earlier " +
-            "evaluation - expand_variable on a member that has to be evaluated, or " +
-            "evaluate_expression - can cause. This never recovers on retry: the debuggee stays " +
-            "suspended until detach_from_process releases it, after which you can attach again.",
+            "The debugger is holding a handle it has already released. Retrying does not help; " +
+            "detach_from_process releases the debuggee, after which you can attach again.",
 
         [Cor.CORDBG_E_IL_VAR_NOT_AVAILABLE] =
             "The variable does not exist at this instruction. It is either out of scope or the " +
