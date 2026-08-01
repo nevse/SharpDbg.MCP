@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
@@ -32,7 +33,8 @@ public class ProcessDiscovery
                             ProcessOwnership.Of(process.Id)));
                     }
                 }
-                catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException)
+                catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException
+                                               or Win32Exception)
                 {
                     // Skip processes we can't access (permission denied or process exited)
                     Console.Error.WriteLine($"[ProcessDiscovery] Cannot access process {process.Id}: {ex.Message}");
@@ -43,7 +45,8 @@ public class ProcessDiscovery
                 }
             }
         }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or PlatformNotSupportedException)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or PlatformNotSupportedException
+                                       or Win32Exception)
         {
             // Return empty list if we can't enumerate processes
             Console.Error.WriteLine($"[ProcessDiscovery] Cannot enumerate processes: {ex.Message}");
@@ -89,12 +92,15 @@ public class ProcessDiscovery
                     }
                 }
             }
-            catch (Exception ex) when (ex is UnauthorizedAccessException or PlatformNotSupportedException)
+            catch (Exception ex) when (ex is UnauthorizedAccessException or PlatformNotSupportedException
+                                           or Win32Exception)
             {
-                // Can't enumerate modules on macOS/Linux without permissions - fallback to process name check
+                // Modules cannot be enumerated without being able to open the process: permissions on
+                // macOS and Linux, "Unable to enumerate the process modules" as a Win32Exception on
+                // Windows. Fall back to the process name check.
             }
         }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception)
         {
             // Process doesn't exist or we can't access it
             return false;
@@ -126,7 +132,8 @@ public class ProcessDiscovery
             // Process with specified ID not found
             return null;
         }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException
+                                       or Win32Exception)
         {
             // Can't access process or process exited
             Console.Error.WriteLine($"[ProcessDiscovery] Cannot access process {processId}: {ex.Message}");
@@ -140,7 +147,8 @@ public class ProcessDiscovery
         {
             return process.MainModule?.FileName;
         }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or PlatformNotSupportedException)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or PlatformNotSupportedException
+                                       or Win32Exception)
         {
             // Can't access main module (permissions or platform limitation)
             return null;
