@@ -1,4 +1,5 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+
 using SharpDbg.MCP.Tools;
 
 namespace SharpDbg.MCP.Tests.Tools;

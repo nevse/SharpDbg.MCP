@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+
 using SharpDbg.MCP.Configuration;
 
 namespace SharpDbg.MCP.Tests.Configuration;
@@ -44,9 +45,9 @@ public class ServerConfigurationTests
         Assert.AreEqual(LogLevel.Information, config.LogLevel);
         Assert.AreEqual(1, config.MaxConcurrentSessions);
         Assert.AreEqual(30, config.OperationTimeoutSeconds);
-        Assert.AreEqual(false, config.AllowOtherUserProcesses);
+        Assert.IsFalse(config.AllowOtherUserProcesses);
         Assert.AreEqual(5000, config.ExpressionEvaluationTimeoutMs);
-        Assert.AreEqual(false, config.EnableDiagnostics);
+        Assert.IsFalse(config.EnableDiagnostics);
         Assert.IsTrue(config.JustMyCode);
         Assert.AreEqual("1.0.0", config.Version);
     }
@@ -165,7 +166,7 @@ public class ServerConfigurationTests
         var config = ServerConfiguration.LoadFromEnvironment();
 
         // Assert
-        Assert.AreEqual(true, config.AllowOtherUserProcesses);
+        Assert.IsTrue(config.AllowOtherUserProcesses);
     }
 
     [TestMethod]
@@ -178,7 +179,7 @@ public class ServerConfigurationTests
         var config = ServerConfiguration.LoadFromEnvironment();
 
         // Assert
-        Assert.AreEqual(false, config.AllowOtherUserProcesses);
+        Assert.IsFalse(config.AllowOtherUserProcesses);
     }
 
     [TestMethod]
@@ -204,7 +205,7 @@ public class ServerConfigurationTests
         var config = ServerConfiguration.LoadFromEnvironment();
 
         // Assert
-        Assert.AreEqual(true, config.EnableDiagnostics);
+        Assert.IsTrue(config.EnableDiagnostics);
     }
 
     [TestMethod]
@@ -225,9 +226,9 @@ public class ServerConfigurationTests
         Assert.AreEqual(LogLevel.Trace, config.LogLevel);
         Assert.AreEqual(10, config.MaxConcurrentSessions);
         Assert.AreEqual(120, config.OperationTimeoutSeconds);
-        Assert.AreEqual(true, config.AllowOtherUserProcesses);
+        Assert.IsTrue(config.AllowOtherUserProcesses);
         Assert.AreEqual(15000, config.ExpressionEvaluationTimeoutMs);
-        Assert.AreEqual(true, config.EnableDiagnostics);
+        Assert.IsTrue(config.EnableDiagnostics);
     }
 
     [TestMethod]
@@ -259,7 +260,7 @@ public class ServerConfigurationTests
 
         // Assert
         Assert.IsNotNull(result);
-        Assert.IsTrue(result.Contains("MaxConcurrentSessions"));
+        Assert.Contains("MaxConcurrentSessions", result);
     }
 
     [TestMethod]
@@ -273,7 +274,7 @@ public class ServerConfigurationTests
 
         // Assert
         Assert.IsNotNull(result);
-        Assert.IsTrue(result.Contains("MaxConcurrentSessions"));
+        Assert.Contains("MaxConcurrentSessions", result);
     }
 
     [TestMethod]
@@ -287,7 +288,7 @@ public class ServerConfigurationTests
 
         // Assert
         Assert.IsNotNull(result);
-        Assert.IsTrue(result.Contains("OperationTimeoutSeconds"));
+        Assert.Contains("OperationTimeoutSeconds", result);
     }
 
     [TestMethod]
@@ -301,7 +302,7 @@ public class ServerConfigurationTests
 
         // Assert
         Assert.IsNotNull(result);
-        Assert.IsTrue(result.Contains("ExpressionEvaluationTimeoutMs"));
+        Assert.Contains("ExpressionEvaluationTimeoutMs", result);
     }
 
     [TestMethod]

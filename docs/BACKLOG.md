@@ -5,26 +5,6 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 ## P0 — broken or untrustworthy today
 
-### The Code Quality job cannot fail
-Both of its steps carry `continue-on-error: true`, so the job reports success no matter what it
-finds. It is currently hiding two real failures on every run:
-
-- `dotnet format --verify-no-changes` exits with code 2 on 24 violations across 16 files
-- `dotnet build /p:TreatWarningsAsErrors=true` produces 11 `MSTEST0037` errors in
-  `ServerConfigurationTests.cs` (`Assert.AreEqual` where `Assert.IsTrue`/`IsFalse`/`Contains` is
-  meant)
-
-Both surface in the run summary as failure annotations while the checkmark stays green, which is
-the worst of both worlds: loud enough to be noticed, powerless to block anything.
-
-Fix the two underlying problems, then remove `continue-on-error`. Most of the format violations
-trace to one line: `.editorconfig` sets `insert_final_newline = false` while every file in the
-repository ends with a newline, so the setting contradicts the code it governs.
-
-There is also no `global.json`, so the SDK is whatever each developer has installed.
-Pin it while fixing this.
-**Effort: S**
-
 ### Integration tests do not run in CI
 `.github/workflows/ci.yml` filters out `TestCategory=Integration` because attaching a real
 ICorDebug debugger to a child process is not reliably permitted on hosted runners. Until this is

@@ -58,13 +58,37 @@ jobs:
     - name: Restore dependencies
       run: dotnet restore
 
+    # Both checks are allowed to fail so that every one of them runs and reports its
+    # findings; the gate below turns the collected results into the job status.
     - name: Check format
+      id: format
       run: dotnet format --verify-no-changes --verbosity diagnostic
       continue-on-error: true
 
     - name: Run code analysis
+      id: analysis
       run: dotnet build --no-restore /p:TreatWarningsAsErrors=true
       continue-on-error: true
+
+    - name: Code quality gate
+      if: always()
+      env:
+        FORMAT_OUTCOME: ${{ steps.format.outcome }}
+        ANALYSIS_OUTCOME: ${{ steps.analysis.outcome }}
+      run: |
+        status=0
+        if [ "$FORMAT_OUTCOME" != "success" ]; then
+          echo "::error title=Format::dotnet format reported violations (see the Check format step)"
+          status=1
+        fi
+        if [ "$ANALYSIS_OUTCOME" != "success" ]; then
+          echo "::error title=Analysis::Code analysis reported warnings as errors (see the Run code analysis step)"
+          status=1
+        fi
+        if [ "$status" -eq 0 ]; then
+          echo "All code quality checks passed."
+        fi
+        exit "$status"
 
   package:
     name: Package

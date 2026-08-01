@@ -1,7 +1,9 @@
-using SharpDbg.MCP.Documentation;
 using System.ComponentModel;
 using System.Text.Json;
+
 using ModelContextProtocol.Server;
+
+using SharpDbg.MCP.Documentation;
 
 namespace SharpDbg.MCP.Tools;
 
