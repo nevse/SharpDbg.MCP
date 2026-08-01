@@ -4,16 +4,16 @@ Defects outside this repository that limit what this server can do. None of them
 finish ourselves, so they are kept out of the backlog; the point of this file is that the evidence is
 written down once and a fix can be verified without re-deriving it.
 
-Only defect 1 has been reported, as #24. The rest are deliberately held back until it is fixed, so we can
-see how the maintainer wants these handled before filing more; the drafts at the bottom are ready to
-send.
+Defect 1 was reported as #24 and **fixed in SharpDbg 0.1.8**, which this repository now uses. The
+maintainer also answered two other points in that thread, recorded under defects 2 and 9. The rest are
+still unreported; the drafts at the bottom are ready to send.
 
 ## Checking whether a fix has landed
 
 SharpDbg is a package, so a fix arrives as a version bump:
 
 ```bash
-dotnet list package --outdated          # is there a newer SharpDbg than 0.1.7?
+dotnet list package --outdated          # is there a newer SharpDbg than 0.1.8?
 ```
 
 Bump `SharpDbg` in `Directory.Packages.props`, then run the full suite. Two tests exist purely to
@@ -21,8 +21,11 @@ tell us when a limitation is gone — **they are supposed to start failing:**
 
 | test | defect | what it failing means |
 |---|---|---|
-| `ExpandVariable_MemberNeedingEvaluation_PoisonsLaterContinue` | 1, 2 | the debuggee is no longer stuck after an evaluation; drop the warnings in `expand_variable`, `evaluate_expression` and `continue_execution` |
+| `ExpandVariable_MemberNeedingEvaluation_StillNeedsASecondContinue` | 2 | one continue resumes the debuggee after an evaluation; drop the warnings in `expand_variable` and `evaluate_expression` |
 | `EvaluateExpression_DoesNotYetYieldAnExpandableReference` | 3 | evaluation results can be expanded; say so in `expand_variable`'s description |
+
+This is how defect 1 was found to be fixed: the test that pinned it started failing on 0.1.8, saying
+`Continue unexpectedly succeeded after the poisoning expansion`.
 
 Two defects have no test watching them:
 
@@ -37,46 +40,46 @@ Two defects have no test watching them:
 Everything below was confirmed on 0.1.7 both by decompiling the package and by probing a live
 session.
 
-### 1. Expanding an evaluated member leaves a disposed handle — reported as [#24](https://github.com/MattParkerDev/sharpdbg/issues/24)
+### 1. Expanding an evaluated member leaves a disposed handle — FIXED in 0.1.8
 
-Standalone reproduction: https://github.com/nevse/sharpdbg-bug-handle-disposed-on-continue
-(`dotnet run --project src/Repro`, exit 0 means reproduced).
+Reported as [#24](https://github.com/MattParkerDev/sharpdbg/issues/24), fixed by
+[fd8de64](https://github.com/MattParkerDev/sharpdbg/commit/fd8de64a67ae7ae6bb9129d92acd1800d2bdf07d).
+Expanding a member whose value needed function evaluation used to leave the variable manager holding a
+released handle, after which every `Continue` threw `Handle has been disposed. (0x80131C01)` and only
+`Disconnect` released the debuggee. `Continue` now succeeds - though see defect 2 for what is left.
 
-Expanding a member whose value needs function evaluation — a record's `EqualityContract`, which is a
-`RuntimeType` — leaves the variable manager holding a released handle. Every later `Continue` throws
-`Handle has been disposed. (0x80131C01)`, retrying never recovers, and only `Disconnect` releases the
-debuggee.
+The standalone reproduction at https://github.com/nevse/sharpdbg-bug-handle-disposed-on-continue is
+pinned to 0.1.7 and still reproduces there.
 
-`ManagedDebugger.ContinueWithVariableClear` calls `VariableManager.ClearAndDisposeHandleValues`,
-whose `ICorDebugHandleValue.Dispose()` — an ICorDebugSharp extension over
-`Marshal.ThrowExceptionForHR(TryDispose())` — throws on an already-released handle. The throw escapes
-the `ForEach`, so `_references.Clear()` never runs: 44 references were still registered after the
-failure, which is why the next `Continue` fails the same way. `ClearAndTryDisposeHandleValues` is the
-tolerant twin and is already what the `Disconnect` path uses, which is exactly why detaching
-recovers. Using it in the continue path, or clearing in a `finally`, is a one-line fix.
-
-**Blocks:** nothing outright, but `expand_variable` can cost the session. The tool description warns
-about it and `continue_execution` explains the HRESULT.
-
-### 2. Any successful function evaluation leaves the debuggee unable to resume — not reported
+### 2. Any successful function evaluation leaves the debuggee unable to resume — still open on 0.1.8
 
 The same area as #24 but wider: it is not about variable expansion. Any evaluation that runs code in
 the target leaves the process needing a second `Continue`, and a third then fails with
 `CORDBG_E_SUPERFLOUS_CONTINUE`. The first `Continue` reports success, so the process looks running
 while it is suspended.
 
-| what happened before the continue | continues needed to resume |
-|---|---|
-| exception stop, no evaluation | 1, clean |
-| breakpoint stop, an evaluation that failed | 1, clean |
-| breakpoint stop, `point.ToString()` | 2, then `SUPERFLOUS_CONTINUE` |
-| exception stop, `ManagedDebugger.ExceptionInfo` (4 property reads) | never resumed |
+Mentioned in #24, where the maintainer said he could not reproduce it and asked whether it was still
+happening. Re-measured on 0.1.8, and it is - unchanged from 0.1.7 except that the disposed-handle
+exception is gone, which makes it **quieter rather than better**: before, a caller at least got an
+error, and now it is told the process resumed.
 
-**Blocks:** `evaluate_expression` is affected today, and this is why there is no
+| what happened before the continue | 0.1.7 | 0.1.8 |
+|---|---|---|
+| exception stop, no evaluation | 1, clean | 1, clean |
+| breakpoint stop, an evaluation that failed | 1, clean | 1, clean |
+| breakpoint stop, `point.ToString()` | 2, then `SUPERFLOUS_CONTINUE` | 2, then `SUPERFLOUS_CONTINUE` |
+| exception stop, `ManagedDebugger.ExceptionInfo` (4 property reads) | never resumed | never resumed |
+| expanding a record's `EqualityContract`, then one `Continue` | threw `0x80131C01` | returns true, process stays suspended |
+
+The contrast between the second and third rows is the useful part for whoever fixes it: an evaluation
+that **fails** leaves the process able to resume on one continue, and one that **succeeds** does not.
+
+**Blocks:** `evaluate_expression` and `expand_variable` are affected, and this is why there is no
 `get_exception_info` — the upstream `ExceptionInfo` reads Message, HResult, Source and StackTrace
-through property getters, so retrieving exception details costs the session. A local workaround would
-mean guessing how many extra continues to issue, and guessing high throws `SUPERFLOUS_CONTINUE`, so
-there is nothing safe to do here beyond the warnings.
+through property getters, so retrieving exception details costs the session. Both tool descriptions
+say a second `continue_execution` may be needed. Automating that second continue was considered and
+not done: a continue issued when it was not needed would resume past a stop the caller asked for, and
+the number needed is not predictable - two after one evaluation, more than two after four.
 
 ### 3. Evaluation results carry no variables reference — not reported
 
@@ -177,6 +180,23 @@ defect 2.
 **Blocks:** `set_exception_break_mode` can only be all or nothing. No unhandled-only mode, which is
 what a debugger normally defaults to, and no filtering by exception type.
 
+### Not a defect: a breakpoint is reported unverified and then verified
+
+Recorded because it looked like one from here, and the maintainer explained otherwise in #24: the
+two-phase report is intentional and matches netcoredbg and vsdbg. After an attach the debugger sends a
+breakpoint event with `verified: false` for every breakpoint, so an IDE can show they are not bound
+yet, and a second event with `verified: true` once each one binds.
+
+He also pointed out the intended order, which is worth knowing: `AttachRequest` does not attach -
+`ConfigurationDone` does - so a DAP client sets its initial breakpoints *between* the two, and never
+sees the unverified phase at all.
+
+An MCP server cannot do that. `attach_to_process` and `set_breakpoint` are separate tool calls, and
+nothing knows the breakpoints at attach time, so `ConfigurationDone` has already run by the time the
+first one arrives. `DebugSession` waits for the verified event instead, bounded by
+`SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS`, which is why a breakpoint set immediately after attaching still
+comes back verified.
+
 ## .NET runtime
 
 ### 8. libmscordbi segfaults while replaying attach events
@@ -231,16 +251,22 @@ reduce it to a repro that only attaches and detaches in a loop.
 
 ### Comment on #24, for defect 2
 
-> The disposed handle is one half of this. The other is that **any** successful function evaluation
-> leaves the process needing a second `Continue` before it resumes, whether or not a handle was
-> disposed - and the first `Continue` reports success, so the process looks running while it is
-> suspended.
+The maintainer asked whether the second problem is still happening. It is - re-measured on 0.1.8:
+
+> Thanks, 0.1.8 fixes the disposed handle - `Continue` no longer throws after expanding
+> `EqualityContract`.
 >
-> Measured on 0.1.7, comparing four cases: [table from defect 2]
+> The second problem is still there, and the fix made it quieter rather than better: `Continue` now
+> returns success, but the debuggee does not actually resume until a second `Continue`. A caller is
+> told the process is running while it is suspended.
 >
-> So fixing the disposal alone turns a permanent freeze into a stop that takes two continues to
-> leave. `ExceptionInfo` is worth checking as well, since its four property reads leave the process
-> unable to resume at all.
+> Measured on 0.1.8 with a debuggee that prints a line every 150ms, counting the lines to tell whether
+> it really resumed: [the 0.1.8 column of the table in defect 2]
+>
+> The useful contrast is the middle two rows: an evaluation that **fails** leaves the process able to
+> resume on one continue, one that **succeeds** does not. `ExceptionInfo` is worth a look too - its
+> four property reads leave the process unable to resume at all, which is why I have not exposed
+> exception details in my server.
 
 ### New issue, for defect 4
 

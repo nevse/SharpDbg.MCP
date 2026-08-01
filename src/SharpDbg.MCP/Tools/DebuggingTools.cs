@@ -721,9 +721,10 @@ public sealed class DebuggingTools
         "expand further. References come from get_variables and from this tool; evaluate_expression " +
         "does not currently return one. Expand while still stopped. " +
         "WARNING: expanding a member whose value has to be evaluated in the process - a record's " +
-        "EqualityContract, or anything else of type RuntimeType - currently leaves the debugger " +
-        "with a disposed handle, after which continue_execution always fails and the process stays " +
-        "suspended. Only detach_from_process releases it. Prefer expanding your own data.")]
+        "EqualityContract, or anything else of type RuntimeType - leaves the process needing a " +
+        "second continue_execution before it really resumes. The first one reports resumed=true " +
+        "either way, so if wait_for_stop then reports nothing while the process looks idle, call " +
+        "continue_execution again. Expanding your own fields does not do this.")]
     public string ExpandVariable(int variables_reference, int? session_id = null)
     {
         try
@@ -953,11 +954,11 @@ public sealed class DebuggingTools
     [McpServerTool, Description(
         "Evaluate a C# expression in the context of a stack frame. " +
         "WARNING: an expression that has to run code in the target - a property getter, ToString(), " +
-        "any method call - currently leaves the debuggee needing a second continue_execution before " +
-        "it really resumes, and after several such evaluations it may not resume at all. The first " +
-        "continue_execution still reports resumed=true, so the process looks running while it is " +
-        "suspended. This is a SharpDbg defect. Reading fields through get_variables and " +
-        "expand_variable does not have this problem.")]
+        "any method call - leaves the debuggee needing a second continue_execution before it really " +
+        "resumes, and after several such evaluations it may not resume at all. The first " +
+        "continue_execution reports resumed=true regardless, so the process looks running while it " +
+        "is suspended; calling continue_execution again is what releases it. An expression that " +
+        "fails to evaluate does not do this, and neither does reading fields through get_variables.")]
     public string EvaluateExpression(string expression, int frame_id, int? session_id = null)
     {
         try
