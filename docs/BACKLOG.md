@@ -14,8 +14,6 @@ so can a breakpoint hit that lands while that file's breakpoints are being repla
 step that reaches code without symbols; evaluation results cannot be expanded; exception stops cannot be filtered by type or handled-ness; and the test
 suite is occasionally killed by a crash inside `libmscordbi` during attach.
 
-## P2 — capabilities and robustness
-
 ## P3 — distribution
 
 ### Ship on NuGet and run via `dnx`
