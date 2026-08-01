@@ -137,6 +137,20 @@ public class InputValidationTests
     }
 
     [TestMethod]
+    public void ValidateBreakpointId_ValidId_DoesNotThrow()
+    {
+        InputValidation.ValidateBreakpointId(1);
+        InputValidation.ValidateBreakpointId(int.MaxValue);
+    }
+
+    [TestMethod]
+    public void ValidateBreakpointId_InvalidIds_ThrowsArgumentException()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateBreakpointId(0));
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateBreakpointId(-1));
+    }
+
+    [TestMethod]
     public void ValidateExpression_ValidExpression_DoesNotThrow()
     {
         InputValidation.ValidateExpression("user.Name");
