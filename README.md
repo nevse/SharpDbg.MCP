@@ -34,13 +34,27 @@ SharpDbg MCP Server provides two main capabilities:
 ### 1. Clone and Build
 
 ```bash
-cd /path/to/SharpDbg.MCP
+git clone https://github.com/nevse/SharpDbg.MCP.git
+cd SharpDbg.MCP
 dotnet build src/SharpDbg.MCP/SharpDbg.MCP.csproj
 ```
 
-### 2. Configure Claude Desktop
+### 2. Register the server
 
-Add to your Claude Desktop configuration file:
+The server path must be absolute. Running this from the repository root fills it in for you, which
+avoids the most common installation failure: a configuration file that still holds a placeholder
+path, leaving a server that is listed but never starts.
+
+**Claude Code**, for the current project:
+
+```bash
+claude mcp add sharpdbg -- dotnet run --project "$(pwd)/src/SharpDbg.MCP/SharpDbg.MCP.csproj"
+```
+
+Add `--scope user` to make it available in every project, or `--scope project` to write a `.mcp.json`
+that is committed and shared with your team.
+
+**Claude Desktop**, by hand:
 
 **macOS/Linux**: `~/.config/Claude/claude_desktop_config.json`
 **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
@@ -60,9 +74,36 @@ Add to your Claude Desktop configuration file:
 }
 ```
 
-### 3. Restart Claude Desktop
+Replace `/absolute/path/to/SharpDbg.MCP` with the directory you cloned into — running `pwd` at the
+repository root prints it.
 
-The SharpDbg MCP server will now be available in your conversations.
+### 3. Restart the client
+
+MCP servers are connected when a session starts, so a client that is already running will not pick up
+the new server until it is restarted.
+
+### 4. Verify
+
+Ask the client to list .NET processes, or run `claude mcp list`. If the server does not appear, the
+path in the configuration is the first thing to check.
+
+## Breakpoints need portable PDBs
+
+A breakpoint binds through the target's symbols, so the debuggee must be built with portable PDBs
+sitting next to its assembly. A missing or mismatched PDB is the most common reason `set_breakpoint`
+answers `verified: false` with `No symbols have been loaded for this document`.
+
+Debug builds already do this. For a Release build, or any project that changes the defaults:
+
+```xml
+<PropertyGroup>
+  <DebugType>portable</DebugType>
+  <DebugSymbols>true</DebugSymbols>
+</PropertyGroup>
+```
+
+Optimized code also moves locals out of reach, so `get_variables` is only fully useful with
+`<Optimize>false</Optimize>`.
 
 ## Configuration
 
@@ -200,14 +241,51 @@ Detach the debugger from the current process.
 
 **Returns:** Success/error response.
 
+#### `wait_for_stop`
+Wait for the debuggee to stop, instead of calling `get_process_status` in a loop.
+
+**Parameters:**
+- `timeout_ms` (int, optional): How long to wait, default `10000`, maximum `300000`
+
+**Returns:** The same fields as `get_process_status`, plus `stopped`. A `stopped` of `false` means the
+process was still running when the wait expired, which is not an error — call again to keep waiting.
+A `stop_reason` of `exited` means the process is gone and cannot be stepped or continued.
+
 #### `set_breakpoint`
-Set a breakpoint at a specific file and line number.
+Set a breakpoint at a specific file and line number, or update the conditions of an existing one.
 
 **Parameters:**
 - `file_path` (string): Absolute path to source file
 - `line` (int): Line number (1-based)
+- `condition` (string, optional): C# expression evaluated in the frame; the process only stops when it is true
+- `hit_condition` (string, optional): Hit count in the form `5`, `==5`, `>5`, `>=5`, `<5`, `<=5` or `%5` (every 5th hit)
+
+Hit counts include hits where `condition` was false, and are reset whenever any breakpoint in the
+same file is added, changed or removed. Calling this again for the same file and line replaces both
+conditions, so omitting one clears it.
 
 **Returns:** Breakpoint information including ID, verification status, and message.
+
+**`verified: false`** means the breakpoint is not bound. Usually the path or the line does not exist
+in the target — see [Breakpoints need portable PDBs](#breakpoints-need-portable-pdbs) — but a
+breakpoint in an assembly that has not been loaded yet binds by itself once it loads, so check
+`list_breakpoints` again rather than setting it repeatedly.
+
+#### `remove_breakpoint`
+Remove a previously set breakpoint.
+
+**Parameters:**
+- `breakpoint_id` (int): ID returned by `set_breakpoint`
+
+**Returns:** Success/error response. Removing a breakpoint resets the hit counts of the other
+breakpoints in the same file.
+
+#### `list_breakpoints`
+List every breakpoint set in this session, with its current verification status.
+
+**Parameters:** None
+
+**Returns:** Array of breakpoints with ID, file, line, verification status, and conditions.
 
 #### `get_threads`
 Get all threads in the attached process.
@@ -231,6 +309,22 @@ Get local variables for a specific stack frame.
 - `frame_id` (int): Stack frame ID from get_stack_trace
 
 **Returns:** Array of variables with names, values, types, and references for expansion.
+
+#### `expand_variable`
+Expand a `variables_reference` into its members, which may themselves carry references to expand
+further. Works only while the process is stopped.
+
+**Parameters:**
+- `variables_reference` (int): Reference from `get_variables` or from this tool
+
+**Returns:** Array of members with names, values, types, and further references.
+
+> **Warning:** expanding a member whose value has to be evaluated in the process — a record's
+> `EqualityContract`, or anything else of type `RuntimeType` — currently leaves the debugger holding
+> a disposed handle, after which `continue_execution` always fails and the process stays suspended.
+> Only `detach_from_process` releases it. This is a SharpDbg defect, reported as
+> [MattParkerDev/sharpdbg#24](https://github.com/MattParkerDev/sharpdbg/issues/24). Prefer expanding
+> your own data.
 
 #### `continue_execution`
 Resume process execution until next breakpoint or exit.
@@ -281,16 +375,21 @@ Evaluate a C# expression in the context of a stack frame.
 
 ### Limitations & Planned Features
 
-**Current Limitations (Require Upstream SharpDbg.Infrastructure Changes):**
-- **Conditional Breakpoints** - Breaking only when an expression evaluates to true
-- **Exception Breakpoint Filters** - Configuring break-on-exception behavior (all exceptions, unhandled only, specific types)
+**Current Limitations (Require Upstream SharpDbg Changes):**
+- **Expanding an evaluated member freezes the debuggee** - see the warning under `expand_variable`
+  ([MattParkerDev/sharpdbg#24](https://github.com/MattParkerDev/sharpdbg/issues/24))
+- **Expanding an evaluation result** - `evaluate_expression` never returns a usable
+  `variables_reference`, so only variables from `get_variables` can be walked
 - **Watch Expressions** - Continuous monitoring of expression values
 
-**Future Enhancements:**
+**Not Implemented Yet:**
+- **Break on exception** - stopping when an exception is thrown
+- **Function breakpoints** - breaking on a method name rather than a file and line
 - Multi-session support (debug multiple processes simultaneously)
 - Hot reload support (modify code while debugging)
 - Data breakpoints (break when memory changes)
-- Function breakpoints (break on function entry)
+
+Conditional and hit-count breakpoints are implemented — see `set_breakpoint`.
 
 ## Quick Start Example
 
@@ -338,7 +437,8 @@ Claude: [Uses set_breakpoint("/path/to/Program.cs", 42)]
 Claude: [Uses continue_execution()]
 "Resuming execution. The debugger will stop at the breakpoint."
 
-[Breakpoint hits]
+Claude: [Uses wait_for_stop()]
+"Stopped at Program.cs:42 on thread 1."
 
 Claude: [Uses get_threads()]
 "Found 3 threads. Examining the main thread..."
@@ -525,7 +625,7 @@ Error: "Process {PID} is not a .NET process"
 
 **3. Process Exited**
 ```
-Error: "Not attached to a process. Use AttachToProcess first."
+Error: "Not attached to a process. Use attach_to_process first."
 ```
 
 **Solutions:**

@@ -45,15 +45,6 @@ have to be registered with the variable manager the way scope members already ar
 `EvaluateExpression_DoesNotYetYieldAnExpandableReference` pins the current behaviour.
 **Effort: M (upstream)**
 
-### README does not match the server
-The tool list is missing `wait_for_stop`, `remove_breakpoint`, `list_breakpoints` and
-`expand_variable`, `set_breakpoint` says nothing about its conditions, and the server's own error
-messages name tools in PascalCase (`Use AttachToProcess first`) even though the SDK exposes them
-snake_cased, so a caller that follows the message gets `Unknown tool`. Nothing mentions that
-breakpoints need portable PDBs next to the target assembly, which is the most common reason a
-breakpoint stays unverified.
-**Effort: S**
-
 ## P2 — capabilities the current package already supports
 
 ### Function breakpoints
