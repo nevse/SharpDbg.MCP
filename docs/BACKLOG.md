@@ -19,10 +19,28 @@ holding a disposed handle. Every subsequent `Continue` then throws
 `DetachFromProcess` is the only way out and does still work.
 
 Reproduced on 0.1.7 and pinned by
-`ExpandVariable_MemberNeedingEvaluation_PoisonsLaterContinue`. The fix belongs upstream, in
-`VariableManager.ClearAndDisposeHandleValues` / `ManagedDebugger.ContinueWithVariableClear`, which
-should tolerate a handle the evaluation path already disposed. Worth reporting to SharpDbg.
-**Effort: S locally (warning is in place), M upstream**
+`ExpandVariable_MemberNeedingEvaluation_PoisonsLaterContinue`.
+
+Reported upstream as https://github.com/MattParkerDev/sharpdbg/issues/24, with a standalone
+reproduction at https://github.com/nevse/sharpdbg-bug-handle-disposed-on-continue. Two separate
+defects, both confirmed by decompiling 0.1.7 and by probing a live session:
+
+1. `ManagedDebugger.ContinueWithVariableClear` calls `VariableManager.ClearAndDisposeHandleValues`,
+   whose `ICorDebugHandleValue.Dispose()` (an ICorDebugSharp extension over
+   `Marshal.ThrowExceptionForHR(TryDispose())`) throws on a handle that is already disposed. The
+   throw escapes the `ForEach`, so `_references.Clear()` never runs and the next `Continue` walks
+   the same list into the same exception - 44 stale references were still registered after the
+   failure. `ClearAndTryDisposeHandleValues` is the tolerant twin and is already what the
+   disconnect path uses, which is exactly why detach recovers. Switching the continue path to it,
+   or clearing in a `finally`, is a one-line fix.
+2. Once the references are cleared by hand, `Continue` still needs to be called twice before the
+   debuggee runs again: the member evaluation leaves an unbalanced stop, and a third call then
+   fails with `CORDBG_E_SUPERFLOUS_CONTINUE`. So fixing (1) alone would turn a permanent freeze
+   into a stop that takes two continues to leave.
+
+**Effort: S upstream for (1), M upstream for (2); nothing to fix here beyond the warning already
+in place - `_debugger` and `_variableManager` are both private, so a local workaround would need
+reflection**
 
 
 ### Evaluated objects cannot be expanded
