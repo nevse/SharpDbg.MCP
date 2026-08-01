@@ -151,6 +151,37 @@ public class InputValidationTests
     }
 
     [TestMethod]
+    public void ValidateHitCondition_ValidForms_DoNotThrow()
+    {
+        InputValidation.ValidateHitCondition(null);
+        InputValidation.ValidateHitCondition("");
+        InputValidation.ValidateHitCondition("5");
+        InputValidation.ValidateHitCondition("==5");
+        InputValidation.ValidateHitCondition(">5");
+        InputValidation.ValidateHitCondition(">=5");
+        InputValidation.ValidateHitCondition("<5");
+        InputValidation.ValidateHitCondition("<=5");
+        InputValidation.ValidateHitCondition("%5");
+        InputValidation.ValidateHitCondition("  >= 5 ".Replace(" ", string.Empty));
+    }
+
+    [TestMethod]
+    public void ValidateHitCondition_Unparseable_ThrowsArgumentException()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateHitCondition("every other"));
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateHitCondition(">"));
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateHitCondition("=5"));
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateHitCondition("5x"));
+    }
+
+    [TestMethod]
+    public void ValidateHitCondition_ModuloWithoutPositiveInterval_ThrowsArgumentException()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateHitCondition("%0"));
+        Assert.ThrowsExactly<ArgumentException>(() => InputValidation.ValidateHitCondition("%-2"));
+    }
+
+    [TestMethod]
     public void ValidateExpression_ValidExpression_DoesNotThrow()
     {
         InputValidation.ValidateExpression("user.Name");

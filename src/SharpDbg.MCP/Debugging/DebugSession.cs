@@ -235,9 +235,15 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Set a breakpoint at a specific file and line, or update the condition of an existing one
+    /// Set a breakpoint at a specific file and line, or update the conditions of an existing one.
+    /// Note that re-sending a file's breakpoints resets their hit counts, because
+    /// ManagedDebugger.SetBreakpoints recreates every breakpoint in the file.
     /// </summary>
-    public BreakpointResult SetBreakpoint(string filePath, int line, string? condition = null)
+    public BreakpointResult SetBreakpoint(
+        string filePath,
+        int line,
+        string? condition = null,
+        string? hitCondition = null)
     {
         var debugger = RequireDebugger();
 
@@ -246,6 +252,7 @@ public class DebugSession : IDisposable
         int id;
         var isNew = false;
         string? previousCondition = null;
+        string? previousHitCondition = null;
 
         lock (_stateLock)
         {
@@ -255,13 +262,19 @@ public class DebugSession : IDisposable
             {
                 id = existing.Id;
                 previousCondition = existing.Condition;
+                previousHitCondition = existing.HitCondition;
                 existing.Condition = condition;
+                existing.HitCondition = hitCondition;
             }
             else
             {
                 isNew = true;
                 id = _nextBreakpointId++;
-                _breakpoints[id] = new TrackedBreakpoint(id, filePath, line) { Condition = condition };
+                _breakpoints[id] = new TrackedBreakpoint(id, filePath, line)
+                {
+                    Condition = condition,
+                    HitCondition = hitCondition
+                };
             }
         }
 
@@ -276,9 +289,14 @@ public class DebugSession : IDisposable
             lock (_stateLock)
             {
                 if (isNew)
+                {
                     _breakpoints.Remove(id);
+                }
                 else if (_breakpoints.TryGetValue(id, out var reverted))
+                {
                     reverted.Condition = previousCondition;
+                    reverted.HitCondition = previousHitCondition;
+                }
             }
 
             throw;
@@ -368,7 +386,7 @@ public class DebugSession : IDisposable
         }
 
         var requests = forFile
-            .Select(b => new SharpDbgBreakpointRequest(b.Line, b.Condition))
+            .Select(b => new SharpDbgBreakpointRequest(b.Line, b.Condition, b.HitCondition))
             .ToArray();
 
         var applied = debugger.SetBreakpoints(filePath, requests);
@@ -743,11 +761,14 @@ internal sealed class TrackedBreakpoint(int id, string filePath, int line)
 
     public string? Condition { get; set; }
 
+    /// <summary>Hit-count condition, e.g. "5", "&gt;=3", "%2"</summary>
+    public string? HitCondition { get; set; }
+
     public bool Verified { get; set; }
 
     public string? Message { get; set; }
 
-    public BreakpointResult ToResult() => new(Id, FilePath, Line, Verified, Message);
+    public BreakpointResult ToResult() => new(Id, FilePath, Line, Verified, Message, Condition, HitCondition);
 }
 
 /// <summary>
@@ -758,7 +779,9 @@ public record BreakpointResult(
     string FilePath,
     int Line,
     bool Verified,
-    string? Message);
+    string? Message,
+    string? Condition = null,
+    string? HitCondition = null);
 
 /// <summary>
 /// Information about a thread

@@ -160,14 +160,22 @@ public static class DebuggingTools
         }
     }
 
-    [McpServerTool, Description("Set a breakpoint at a specific file and line number")]
-    public static string SetBreakpoint(string file_path, int line)
+    [McpServerTool, Description(
+        "Set a breakpoint at a specific file and line number. " +
+        "Optionally pass condition, a C# expression evaluated in the frame that must be true to " +
+        "stop, and/or hit_condition, a hit count in the form '5', '==5', '>5', '>=5', '<5', '<=5' " +
+        "or '%5' (every 5th hit). Hit counts include hits where condition was false, and are reset " +
+        "whenever any breakpoint in the same file is added, changed or removed. " +
+        "Calling this again for the same file and line replaces both conditions, so omitting one " +
+        "clears it.")]
+    public static string SetBreakpoint(string file_path, int line, string? condition = null, string? hit_condition = null)
     {
         try
         {
             // Validate input
             InputValidation.ValidateFilePath(file_path);
             InputValidation.ValidateLineNumber(line);
+            InputValidation.ValidateHitCondition(hit_condition);
 
             var session = _sessionManager.Value.GetOrCreateCurrentSession();
 
@@ -181,7 +189,7 @@ public static class DebuggingTools
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
 
-            var result = session.SetBreakpoint(file_path, line);
+            var result = session.SetBreakpoint(file_path, line, condition, hit_condition);
 
             var response = new
             {
@@ -192,6 +200,8 @@ public static class DebuggingTools
                     file_path = result.FilePath,
                     line = result.Line,
                     verified = result.Verified,
+                    condition = result.Condition,
+                    hit_condition = result.HitCondition,
                     message = result.Message
                 }
             };
@@ -281,6 +291,8 @@ public static class DebuggingTools
                     file_path = b.FilePath,
                     line = b.Line,
                     verified = b.Verified,
+                    condition = b.Condition,
+                    hit_condition = b.HitCondition,
                     message = b.Message
                 }).ToList()
             };
