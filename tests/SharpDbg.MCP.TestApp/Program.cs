@@ -26,6 +26,12 @@ internal static class Program
     {
         var next = current + 1; // BREAKPOINT-TARGET
         var label = $"n={next}"; // STEP-TARGET
-        return next + label.Length - label.Length;
+        var point = new Point(next, label.Length);
+        return point.X; // EXPAND-TARGET
     }
+
+    /// <summary>
+    /// Gives the expansion tests an object with members to walk into
+    /// </summary>
+    private sealed record Point(int X, int Y);
 }

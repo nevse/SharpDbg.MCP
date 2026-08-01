@@ -455,6 +455,62 @@ public static class DebuggingTools
         }
     }
 
+    [McpServerTool, Description(
+        "Expand a variables_reference into its members, which may themselves carry references to " +
+        "expand further. References come from GetVariables and from this tool; EvaluateExpression " +
+        "does not currently return one. Expand while still stopped. " +
+        "WARNING: expanding a member whose value has to be evaluated in the process - a record's " +
+        "EqualityContract, or anything else of type RuntimeType - currently leaves the debugger " +
+        "with a disposed handle, after which ContinueExecution always fails and the process stays " +
+        "suspended. Only DetachFromProcess releases it. Prefer expanding your own data.")]
+    public static string ExpandVariable(int variables_reference)
+    {
+        try
+        {
+            InputValidation.ValidateVariablesReference(variables_reference);
+
+            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+
+            if (!session.IsAttached)
+            {
+                var notAttachedResponse = new
+                {
+                    success = false,
+                    error = "Not attached to a process. Use AttachToProcess first."
+                };
+                return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            // Call async method synchronously for MCP tool
+            var members = session.ExpandVariable(variables_reference).GetAwaiter().GetResult();
+
+            var response = new
+            {
+                success = true,
+                variables_reference,
+                member_count = members.Count,
+                members = members.Select(v => new
+                {
+                    name = v.Name,
+                    value = v.Value,
+                    type = v.Type,
+                    variables_reference = v.VariablesReference
+                }).ToList()
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            var errorResponse = new
+            {
+                success = false,
+                error = ex.Message
+            };
+            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
     [McpServerTool, Description("Continue execution until the next breakpoint or process exit")]
     public static string ContinueExecution()
     {
@@ -487,10 +543,18 @@ public static class DebuggingTools
         }
         catch (Exception ex)
         {
+            // 0x80131C01 here means the debugger is holding a disposed handle, which an earlier
+            // ExpandVariable on an evaluated member can cause. It never recovers on retry.
+            var poisoned = ex.Message.Contains("0x80131C01", StringComparison.Ordinal);
+
             var errorResponse = new
             {
                 success = false,
-                error = ex.Message
+                error = ex.Message,
+                hint = poisoned
+                    ? "The debug session cannot resume this process any more. Retrying will not " +
+                      "help; use DetachFromProcess to release it, then attach again."
+                    : null
             };
             return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
         }

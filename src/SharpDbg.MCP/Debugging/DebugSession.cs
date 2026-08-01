@@ -453,7 +453,9 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Get variables for a stack frame by frame ID
+    /// Get variables for a stack frame by frame ID.
+    /// ManagedDebugger exposes a single "Locals" scope per frame which already covers the current
+    /// exception, the arguments and the locals.
     /// </summary>
     public async Task<List<VariableInfo>> GetVariables(int frameId)
     {
@@ -464,8 +466,19 @@ public class DebugSession : IDisposable
         if (scopes.Count == 0)
             return new List<VariableInfo>();
 
-        // Get variables from the first scope (typically "Locals")
         return await debugger.GetVariables(scopes[0].VariablesReference);
+    }
+
+    /// <summary>
+    /// Expand a variables reference into its members. References come from GetVariables or
+    /// EvaluateExpression and are invalidated as soon as the process resumes.
+    /// </summary>
+    public async Task<List<VariableInfo>> ExpandVariable(int variablesReference)
+    {
+        var debugger = RequireDebugger();
+
+        // Call async methods outside the lock to avoid deadlocks
+        return await debugger.GetVariables(variablesReference);
     }
 
     /// <summary>

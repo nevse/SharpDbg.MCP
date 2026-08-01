@@ -11,11 +11,27 @@ Delete it. It inflates the test count without asserting anything.
 
 ## P1 — real functional gaps
 
-### Objects cannot be expanded
-`get_variables` returns a `variables_reference` for every non-primitive value, but there is no tool
-that takes one and returns the nested members — so any object is visible only as its string form.
-`DebugSession.GetVariables` also reads `scopes[0]` only and silently drops the remaining scopes.
-**Effort: M**
+### Expanding an evaluated member suspends the debuggee for good
+`expand_variable` works, but expanding a member whose value needs function evaluation in the target
+— a record's `EqualityContract`, which is a `RuntimeType` — leaves SharpDbg's variable manager
+holding a disposed handle. Every subsequent `Continue` then throws
+`Handle has been disposed. (0x80131C01)`, retrying never recovers, and the debuggee stays suspended.
+`DetachFromProcess` is the only way out and does still work.
+
+Reproduced on 0.1.7 and pinned by
+`ExpandVariable_MemberNeedingEvaluation_PoisonsLaterContinue`. The fix belongs upstream, in
+`VariableManager.ClearAndDisposeHandleValues` / `ManagedDebugger.ContinueWithVariableClear`, which
+should tolerate a handle the evaluation path already disposed. Worth reporting to SharpDbg.
+**Effort: S locally (warning is in place), M upstream**
+
+
+### Evaluated objects cannot be expanded
+`ManagedDebugger.Evaluate` hardcodes `variablesReference` to 0 on every path, so the result of
+`evaluate_expression` is only ever a string — unlike `get_variables`, whose entries can be walked
+with `expand_variable`. Needs a change in SharpDbg itself: the evaluated `ICorDebugValue` would
+have to be registered with the variable manager the way scope members already are.
+`EvaluateExpression_DoesNotYetYieldAnExpandableReference` pins the current behaviour.
+**Effort: M (upstream)**
 
 ### Callers must poll to notice a stop
 After `continue_execution` the only way to learn that a breakpoint was hit is to call
