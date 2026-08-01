@@ -108,7 +108,7 @@ function breakpoints hit it more often because they enumerate every module for e
 **Blocks:** nothing now — `DebugSession.RetryWhileModulesLoad` retries these calls, which is safe
 only because both `SetBreakpoints` and `SetFunctionBreakpoints` replace a whole set.
 
-### 5. A hit on a breakpoint that was just replaced freezes the debuggee — not reported
+### 5. A hit on a breakpoint that was just replaced freezes the debuggee — still open on 0.1.8
 
 `HandleBreakpoint` ends with:
 
@@ -124,14 +124,25 @@ The debuggee is left suspended with the session still believing it runs, and onl
 releases it. A few lines above, an unrecognised breakpoint type is handled by continuing instead,
 which is what this path should do too.
 
-Seen once in CI on macOS, in a test that sets two breakpoints in a file, removes one, and waits for
-the other: the log shows the survivor bound and verified, then nothing for 30 seconds. The debuggee
-hits the line being replaced every 150ms, which is what makes the window reachable at all.
+Caught in a local log on 0.1.8, which is what confirms the diagnosis:
 
-**Blocks:** nothing outright, but every `set_breakpoint` and `remove_breakpoint` re-sends the file's
-whole set - that is forced by the replace semantics - so each call on a running debuggee is a chance
-to hit this. There is nothing safe to do here: pausing around the re-send would trade this race for a
-stop the caller did not ask for.
+```
+[Session 1] Event: BreakpointCorDebugManagedCallbackEventArgs
+[Session 1] Error handling event BreakpointCorDebugManagedCallbackEventArgs:
+            System.ArgumentNullException: Value cannot be null. (Parameter 'managedBreakpoint')
+```
+
+Reachable from **setting** a breakpoint as well as removing one - both re-send the file's whole set,
+which is what the replace semantics force. In that log the trigger was adding a second breakpoint to a
+file while the debuggee was hitting the first one every 150ms. It fired in roughly one run in five of
+a test doing that.
+
+**Blocks:** nothing outright, but every `set_breakpoint` and `remove_breakpoint` on a running debuggee
+is a chance to hit it. Doing this while the debuggee is stopped avoids the window in practice, which
+is what `RemoveBreakpoint_LeavesTheOtherBreakpointsInTheFileArmed` now does; when it does happen, that
+test reports inconclusive with a pointer here rather than turning CI red for an upstream race. There
+is nothing safe to fix here: pausing around every re-send would trade this race for a stop the caller
+did not ask for.
 
 ### 6. Decompiled source locations cannot be produced at all — not reported
 
@@ -267,6 +278,26 @@ The maintainer asked whether the second problem is still happening. It is - re-m
 > resume on one continue, one that **succeeds** does not. `ExceptionInfo` is worth a look too - its
 > four property reads leave the process unable to resume at all, which is why I have not exposed
 > exception details in my server.
+
+### New issue, for defect 5
+
+> **Title:** A breakpoint hit that arrives while that file's breakpoints are being replaced throws in
+> HandleBreakpoint and leaves the debuggee suspended
+>
+> `SetBreakpoints` deactivates and drops the `BreakpointInfo` objects for a file before recreating
+> them. A hit already in flight on one of the dropped ones reaches `HandleBreakpoint`, where
+> `FindByCorBreakpoint` returns null and `ArgumentNullException.ThrowIfNull` throws on the callback
+> thread. Nothing continues the process and no stop is reported, so the debuggee stays suspended while
+> the client still thinks it is running; only `Disconnect` releases it.
+>
+> ```
+> Error handling event BreakpointCorDebugManagedCallbackEventArgs:
+> System.ArgumentNullException: Value cannot be null. (Parameter 'managedBreakpoint')
+> ```
+>
+> Seen on 0.1.8 in about one run in five of a test that adds a second breakpoint to a file while the
+> debuggee hits the first every 150ms. An unrecognised breakpoint type is handled a few lines above by
+> continuing, which looks like the right thing here too.
 
 ### New issue, for defect 4
 
