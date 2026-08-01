@@ -14,7 +14,10 @@ public class ServerConfiguration
     public LogLevel LogLevel { get; set; } = LogLevel.Information;
 
     /// <summary>
-    /// Maximum number of concurrent debug sessions (default: 1, future enhancement)
+    /// Maximum number of debug sessions open at once (default: 1). Raising it lets one server debug
+    /// several processes at the same time, each with its own breakpoints and its own stops, selected
+    /// by session_id. The default of one keeps that off unless it is asked for: every attach carries
+    /// the risk of the shim crash in docs/UPSTREAM.md defect 8, and more sessions means more attaches.
     /// Environment variable: SHARPDBG_MAX_SESSIONS
     /// </summary>
     public int MaxConcurrentSessions { get; set; } = 1;

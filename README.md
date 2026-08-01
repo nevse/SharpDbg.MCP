@@ -102,6 +102,34 @@ Set `SHARPDBG_ALLOW_OTHER_USER_PROCESSES=true` to lift the restriction. Note tha
 system has its own say regardless: on Linux and macOS a normal user cannot attach to another user's
 process even with this enabled, so in practice it matters when the server runs elevated or as root.
 
+## Debugging more than one process
+
+By default the server debugs one process at a time. `SHARPDBG_MAX_SESSIONS` raises that, and each
+session has its own process, its own breakpoints and its own stops.
+
+`attach_to_process` returns a `session_id`. While only one session is open you can ignore it — every
+tool defaults to the only session, exactly as before. Attaching a second process opens a second
+session instead of failing, and from then on `session_id` becomes **required**: with two processes
+open, guessing which one a `continue_execution` was meant for would be worse than asking for the id.
+
+```
+list_sessions                     → which sessions exist, and what each is attached to
+close_session(session_id)         → detach and free the slot
+```
+
+`detach_from_process` leaves the session open but unattached, so the next `attach_to_process` reuses it
+rather than taking another slot. Reaching the limit is reported with what to do about it:
+
+```
+Maximum number of concurrent debug sessions (1) reached.
+Close one with close_session, or raise SHARPDBG_MAX_SESSIONS.
+```
+
+The default of one is deliberate: every attach carries a risk of the shim crash in
+[docs/UPSTREAM.md](docs/UPSTREAM.md) defect 8, so more sessions means more exposure. Two concurrent
+sessions are verified to stay isolated — resuming one leaves the other where it was — by
+`TwoSessions_DebugTwoProcessesIndependently`.
+
 ## Breakpoints need portable PDBs
 
 A breakpoint binds through the target's symbols, so the debuggee must be built with portable PDBs
@@ -146,7 +174,7 @@ The server can be configured using environment variables. Add them to your Claud
 | Environment Variable | Description | Default | Valid Values |
 |---------------------|-------------|---------|--------------|
 | `SHARPDBG_LOG_LEVEL` | Logging verbosity | `Information` | `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical` |
-| `SHARPDBG_MAX_SESSIONS` | Maximum concurrent debug sessions (future) | `1` | Positive integer |
+| `SHARPDBG_MAX_SESSIONS` | Debug sessions open at once, each debugging its own process | `1` | Positive integer |
 | `SHARPDBG_OPERATION_TIMEOUT_SECONDS` | Timeout for debugging operations | `30` | Positive integer |
 | `SHARPDBG_ALLOW_OTHER_USER_PROCESSES` | Allow attaching to processes not owned by the current user, including ones whose owner cannot be determined | `false` | `true`, `false` |
 | `SHARPDBG_EVAL_TIMEOUT_MS` | Expression evaluation timeout in milliseconds | `5000` | ≥ 100 |
@@ -246,6 +274,22 @@ Browse all available debugging concepts organized by category.
 
 ### Debugging Tools (Phase 2 - Functional)
 
+#### `list_sessions`
+List the open debug sessions, which is how you find the `session_id` the other tools take.
+
+**Parameters:** None
+
+**Returns:** Each session's ID, the process it is attached to, whether it is running or stopped, and
+where it stopped. Plus `max_sessions`, the configured limit.
+
+#### `close_session`
+Close a session, detaching from its process if it is still attached.
+
+**Parameters:**
+- `session_id` (int): ID from `attach_to_process` or `list_sessions`
+
+**Returns:** Success/error response.
+
 #### `list_dotnet_processes`
 List all .NET processes currently running on the system.
 
@@ -260,8 +304,11 @@ Attach the debugger to a .NET process.
 
 **Parameters:**
 - `process_id` (int): Process ID to attach to
+- `session_id` (int, optional): Attach in this existing session rather than picking one
 
-**Returns:** Success/error response with session information.
+**Returns:** Success/error response including the `session_id` to pass to the other tools. Attaching
+while another process is already being debugged opens a second session — see [Debugging more than one
+process](#debugging-more-than-one-process).
 
 #### `get_process_status`
 Check the status of the current debug session.

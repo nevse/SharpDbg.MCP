@@ -29,16 +29,25 @@ public class DebugSessionManager : IDisposable
 
         lock (_lock)
         {
-            if (_sessions.Count >= _configuration.MaxConcurrentSessions)
-                throw new InvalidOperationException(
-                    $"Maximum number of concurrent debug sessions ({_configuration.MaxConcurrentSessions}) reached. " +
-                    "Close an existing session or raise SHARPDBG_MAX_SESSIONS.");
-
-            var sessionId = _nextSessionId++;
-            var session = new DebugSession(sessionId, _configuration);
-            _sessions[sessionId] = session;
-            return session;
+            return CreateSessionCore();
         }
+    }
+
+    /// <summary>
+    /// Caller already holds the lock. Kept separate so Resolve and AcquireForAttach can create a
+    /// session without releasing and retaking it, which would let two callers past the limit.
+    /// </summary>
+    private DebugSession CreateSessionCore()
+    {
+        if (_sessions.Count >= _configuration.MaxConcurrentSessions)
+            throw new InvalidOperationException(
+                $"Maximum number of concurrent debug sessions ({_configuration.MaxConcurrentSessions}) reached. " +
+                "Close one with close_session, or raise SHARPDBG_MAX_SESSIONS.");
+
+        var sessionId = _nextSessionId++;
+        var session = new DebugSession(sessionId, _configuration);
+        _sessions[sessionId] = session;
+        return session;
     }
 
     /// <summary>
@@ -93,22 +102,56 @@ public class DebugSessionManager : IDisposable
     }
 
     /// <summary>
-    /// Get or create the current session (for single-session mode)
+    /// The session a tool call is about. Omitting the id is the normal case and keeps working as
+    /// long as there is nothing to be ambiguous about: it creates the first session, and picks the
+    /// only one after that. With several sessions open the id becomes required, because guessing
+    /// which process a breakpoint or a continue was meant for is worse than asking.
     /// </summary>
-    public DebugSession GetOrCreateCurrentSession()
+    public DebugSession Resolve(int? sessionId)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(DebugSessionManager));
 
         lock (_lock)
         {
-            // For MVP, we'll just use a single session
-            if (_sessions.Count == 0)
+            if (sessionId.HasValue)
             {
-                return CreateSession();
+                return _sessions.TryGetValue(sessionId.Value, out var requested)
+                    ? requested
+                    : throw new ArgumentException(
+                        $"There is no debug session with id {sessionId.Value}. Use list_sessions to see the open ones.",
+                        nameof(sessionId));
             }
 
+            if (_sessions.Count == 0)
+                return CreateSessionCore();
+
+            if (_sessions.Count > 1)
+                throw new InvalidOperationException(
+                    $"{_sessions.Count} debug sessions are open, so session_id is required. " +
+                    "Use list_sessions to see which is which.");
+
             return _sessions.Values.First();
+        }
+    }
+
+    /// <summary>
+    /// A session to attach a process to: an open one that is not attached to anything, or a new one.
+    /// This is what makes a second attach open a second session rather than fail.
+    /// </summary>
+    public DebugSession AcquireForAttach(int? sessionId)
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(DebugSessionManager));
+
+        if (sessionId.HasValue)
+            return Resolve(sessionId);
+
+        lock (_lock)
+        {
+            var free = _sessions.Values.FirstOrDefault(s => !s.IsAttached);
+
+            return free ?? CreateSessionCore();
         }
     }
 

@@ -16,12 +16,6 @@ suite is occasionally killed by a crash inside `libmscordbi` during attach.
 
 ## P2 — capabilities and robustness
 
-### Multi-session support is dead code
-`DebugSessionManager.CreateSession/GetSession/CloseSession` are never called; every tool goes
-through `GetOrCreateCurrentSession()`. Either add `session_id` to the tool signatures and finish
-it, or delete the manager and be honest about supporting one session.
-**Effort: M**
-
 ### Process discovery is heuristic
 `ProcessDiscovery.IsDotNetProcess` matches on process name (`dotnet`, `testhost`), so
 self-contained apps are invisible. The diagnostic IPC channel that `dotnet-trace ps` uses is exact.
