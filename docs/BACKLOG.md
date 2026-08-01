@@ -11,12 +11,6 @@ Delete it. It inflates the test count without asserting anything.
 
 ## P1 — real functional gaps
 
-### No way to remove or list breakpoints
-`set_breakpoint` exists; there is no `remove_breakpoint` and no `list_breakpoints`. Once a
-breakpoint is set the only way to get rid of it is to detach. `BreakpointManager` already supports
-clearing, and `DebugSession` already tracks every breakpoint it has set.
-**Effort: S**
-
 ### Objects cannot be expanded
 `get_variables` returns a `variables_reference` for every non-primitive value, but there is no tool
 that takes one and returns the nested members — so any object is visible only as its string form.
@@ -39,9 +33,9 @@ most common reason a breakpoint stays unverified.
 ## P2 — capabilities the current package already supports
 
 ### Conditional and hit-count breakpoints
-SharpDbg 0.1.7 takes `SharpDbgBreakpointRequest(Line, Condition, HitCondition, Column)` and
-`DebugSession.SetBreakpoint` already accepts a condition — it is simply not exposed as an MCP tool
-parameter. Nearly free.
+`DebugSession.SetBreakpoint` already accepts a condition and forwards it in
+`SharpDbgBreakpointRequest`, and re-registration preserves it. All that is missing is a `condition`
+parameter on the `set_breakpoint` tool, plus `HitCondition`, which is not plumbed through yet.
 **Effort: S**
 
 ### Function breakpoints

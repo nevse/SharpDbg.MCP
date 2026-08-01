@@ -209,6 +209,95 @@ public static class DebuggingTools
         }
     }
 
+    [McpServerTool, Description("Remove a previously set breakpoint by its ID")]
+    public static string RemoveBreakpoint(int breakpoint_id)
+    {
+        try
+        {
+            InputValidation.ValidateBreakpointId(breakpoint_id);
+
+            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+
+            if (!session.IsAttached)
+            {
+                var notAttachedResponse = new
+                {
+                    success = false,
+                    error = "Not attached to a process. Use AttachToProcess first."
+                };
+                return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            var removed = session.RemoveBreakpoint(breakpoint_id);
+
+            var response = new
+            {
+                success = removed,
+                breakpoint_id,
+                message = removed
+                    ? $"Breakpoint {breakpoint_id} removed"
+                    : $"No breakpoint with ID {breakpoint_id} is set. Use ListBreakpoints to see the current ones."
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            var errorResponse = new
+            {
+                success = false,
+                error = ex.Message
+            };
+            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
+    [McpServerTool, Description("List all breakpoints currently set in the debug session")]
+    public static string ListBreakpoints()
+    {
+        try
+        {
+            var session = _sessionManager.Value.GetOrCreateCurrentSession();
+
+            if (!session.IsAttached)
+            {
+                var notAttachedResponse = new
+                {
+                    success = false,
+                    error = "Not attached to a process. Use AttachToProcess first."
+                };
+                return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            var breakpoints = session.ListBreakpoints();
+
+            var response = new
+            {
+                success = true,
+                count = breakpoints.Count,
+                breakpoints = breakpoints.Select(b => new
+                {
+                    id = b.Id,
+                    file_path = b.FilePath,
+                    line = b.Line,
+                    verified = b.Verified,
+                    message = b.Message
+                }).ToList()
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            var errorResponse = new
+            {
+                success = false,
+                error = ex.Message
+            };
+            return JsonSerializer.Serialize(errorResponse, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
     [McpServerTool, Description("Get the call stack for a specific thread ID")]
     public static string GetStackTrace(int thread_id)
     {

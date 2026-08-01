@@ -12,12 +12,19 @@ public class DebugSession : IDisposable
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
 
+    // macOS and Windows file systems are case-insensitive by default; Linux is not
+    private static readonly StringComparer PathComparer =
+        OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+
     private readonly int _sessionId;
     private readonly bool _justMyCode;
     private readonly TimeSpan _operationTimeout;
     private readonly TimeSpan _evaluationTimeout;
     private readonly object _stateLock = new();
-    private readonly Dictionary<(string FilePath, int Line), BreakpointResult> _breakpoints = new();
+    // Session-owned breakpoint ids. BreakpointManager reassigns its own ids every time a file's
+    // breakpoints are re-sent, so they cannot be handed out as stable references.
+    private readonly Dictionary<int, TrackedBreakpoint> _breakpoints = new();
+    private int _nextBreakpointId = 1;
     private ManagedDebugger? _debugger;
     private int? _attachedProcessId;
     private bool _disposed;
@@ -151,8 +158,10 @@ public class DebugSession : IDisposable
 
             if (reason == "breakpoint")
             {
-                var breakpointId = _breakpoints.TryGetValue((filePath, line), out var known) ? known.Id : 0;
-                _lastBreakpoint = new BreakpointHitInfo(breakpointId, filePath, line, threadId);
+                // The stop reports the line the PDB resolved to, which is not necessarily the
+                // line that was requested.
+                var tracked = FindByLocation(filePath, line);
+                _lastBreakpoint = new BreakpointHitInfo(tracked?.Id ?? 0, filePath, line, threadId);
             }
         }
 
@@ -194,12 +203,9 @@ public class DebugSession : IDisposable
     {
         lock (_stateLock)
         {
-            _breakpoints[(breakpoint.FilePath, breakpoint.Line)] = new BreakpointResult(
-                breakpoint.Id,
-                breakpoint.FilePath,
-                breakpoint.Line,
-                breakpoint.Verified,
-                breakpoint.Message);
+            var tracked = FindByLocation(breakpoint.FilePath, breakpoint.Line);
+            if (tracked != null)
+                ApplyDebuggerState(tracked, breakpoint);
         }
 
         McpLogger.LogDebugSessionEvent(_sessionId, "BreakpointChanged",
@@ -229,7 +235,7 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Set a breakpoint at a specific file and line
+    /// Set a breakpoint at a specific file and line, or update the condition of an existing one
     /// </summary>
     public BreakpointResult SetBreakpoint(string filePath, int line, string? condition = null)
     {
@@ -237,57 +243,178 @@ public class DebugSession : IDisposable
 
         McpLogger.LogDebugSessionEvent(_sessionId, "SetBreakpoint", $"{filePath}:{line}");
 
+        int id;
+        var isNew = false;
+        string? previousCondition = null;
+
+        lock (_stateLock)
+        {
+            var existing = FindByLocation(filePath, line);
+
+            if (existing != null)
+            {
+                id = existing.Id;
+                previousCondition = existing.Condition;
+                existing.Condition = condition;
+            }
+            else
+            {
+                isNew = true;
+                id = _nextBreakpointId++;
+                _breakpoints[id] = new TrackedBreakpoint(id, filePath, line) { Condition = condition };
+            }
+        }
+
         try
         {
-            var request = new SharpDbgBreakpointRequest(line, condition);
-            var breakpoints = debugger.SetBreakpoints(filePath, new[] { request });
-
-            if (breakpoints.Count == 0)
-                throw new InvalidOperationException("Failed to create breakpoint");
-
-            var bp = breakpoints[0];
-            var result = new BreakpointResult(bp.Id, bp.FilePath, bp.Line, bp.Verified, bp.Message);
-
-            lock (_stateLock)
-            {
-                _breakpoints[(result.FilePath, result.Line)] = result;
-            }
-
-            // A breakpoint created before the target module's symbols have loaded comes back
-            // unverified and binds later, on the module-load callback. Wait for that instead of
-            // reporting a pending breakpoint that is about to become active.
-            if (!result.Verified)
-                result = WaitForVerification(result);
-
-            McpLogger.LogDebugSessionEvent(_sessionId, "BreakpointSet",
-                $"ID {result.Id} at {result.FilePath}:{result.Line} (verified={result.Verified})");
-
-            return result;
+            ReapplyFile(debugger, filePath);
         }
         catch (Exception ex)
         {
             McpLogger.LogDebugSessionError(_sessionId, "SetBreakpoint", ex);
+
+            lock (_stateLock)
+            {
+                if (isNew)
+                    _breakpoints.Remove(id);
+                else if (_breakpoints.TryGetValue(id, out var reverted))
+                    reverted.Condition = previousCondition;
+            }
+
             throw;
+        }
+
+        // A breakpoint created before the target module's symbols have loaded comes back
+        // unverified and binds later, on the module-load callback. Wait for that instead of
+        // reporting a pending breakpoint that is about to become active.
+        var result = WaitForVerification(id);
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "BreakpointSet",
+            $"ID {result.Id} at {result.FilePath}:{result.Line} (verified={result.Verified})");
+
+        return result;
+    }
+
+    /// <summary>
+    /// Remove a breakpoint by its session id. Returns false when no such breakpoint is set.
+    /// </summary>
+    public bool RemoveBreakpoint(int breakpointId)
+    {
+        var debugger = RequireDebugger();
+
+        TrackedBreakpoint? removed;
+
+        lock (_stateLock)
+        {
+            if (!_breakpoints.Remove(breakpointId, out removed))
+                return false;
+        }
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "RemoveBreakpoint",
+            $"ID {breakpointId} at {removed!.FilePath}:{removed.Line}");
+
+        try
+        {
+            ReapplyFile(debugger, removed.FilePath);
+        }
+        catch (Exception ex)
+        {
+            McpLogger.LogDebugSessionError(_sessionId, "RemoveBreakpoint", ex);
+
+            lock (_stateLock)
+            {
+                _breakpoints[removed.Id] = removed;
+            }
+
+            throw;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// All breakpoints currently set in this session
+    /// </summary>
+    public List<BreakpointResult> ListBreakpoints()
+    {
+        lock (_stateLock)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(DebugSession));
+
+            return _breakpoints.Values
+                .OrderBy(b => b.FilePath, PathComparer)
+                .ThenBy(b => b.Line)
+                .Select(b => b.ToResult())
+                .ToList();
         }
     }
 
-    private BreakpointResult WaitForVerification(BreakpointResult breakpoint)
+    /// <summary>
+    /// Re-sends every breakpoint tracked for a file.
+    /// ManagedDebugger.SetBreakpoints replaces the file's entire set, so sending a single line
+    /// would silently drop every other breakpoint in that file.
+    /// </summary>
+    private void ReapplyFile(ManagedDebugger debugger, string filePath)
     {
-        var key = (breakpoint.FilePath, breakpoint.Line);
-        var current = breakpoint;
+        List<TrackedBreakpoint> forFile;
+
+        lock (_stateLock)
+        {
+            forFile = _breakpoints.Values
+                .Where(b => PathComparer.Equals(b.FilePath, filePath))
+                .OrderBy(b => b.Line)
+                .ToList();
+        }
+
+        var requests = forFile
+            .Select(b => new SharpDbgBreakpointRequest(b.Line, b.Condition))
+            .ToArray();
+
+        var applied = debugger.SetBreakpoints(filePath, requests);
+
+        // SetBreakpoints preserves request order, so results line up with forFile
+        lock (_stateLock)
+        {
+            for (var i = 0; i < forFile.Count && i < applied.Count; i++)
+                ApplyDebuggerState(forFile[i], applied[i]);
+        }
+    }
+
+    private BreakpointResult WaitForVerification(int breakpointId)
+    {
+        BreakpointResult? current = null;
 
         WaitFor(() =>
         {
             lock (_stateLock)
             {
-                if (_breakpoints.TryGetValue(key, out var tracked))
-                    current = tracked;
+                if (!_breakpoints.TryGetValue(breakpointId, out var tracked))
+                    return true;
+
+                current = tracked.ToResult();
             }
 
             return current.Verified;
         }, _operationTimeout);
 
-        return current;
+        return current ?? throw new InvalidOperationException("Breakpoint disappeared while being set");
+    }
+
+    /// <summary>
+    /// Locates a tracked breakpoint by the line that was requested or the line it bound to
+    /// </summary>
+    private TrackedBreakpoint? FindByLocation(string filePath, int line)
+    {
+        return _breakpoints.Values.FirstOrDefault(b =>
+            PathComparer.Equals(b.FilePath, filePath) && (b.Line == line || b.ResolvedLine == line));
+    }
+
+    private static void ApplyDebuggerState(TrackedBreakpoint tracked, BreakpointManager.BreakpointInfo info)
+    {
+        tracked.Verified = info.Verified;
+        tracked.Message = info.Message;
+        tracked.ResolvedLine = info.ResolvedBreakpointFromPdb?.StartLine;
     }
 
     /// <summary>
@@ -598,6 +725,30 @@ public record BreakpointHitInfo(
     string? FilePath,
     int Line,
     int ThreadId);
+
+/// <summary>
+/// A breakpoint the session intends to have set, and what the debugger made of it
+/// </summary>
+internal sealed class TrackedBreakpoint(int id, string filePath, int line)
+{
+    public int Id { get; } = id;
+
+    public string FilePath { get; } = filePath;
+
+    /// <summary>Line the caller asked for</summary>
+    public int Line { get; } = line;
+
+    /// <summary>Line the PDB actually bound to, when it differs from the requested one</summary>
+    public int? ResolvedLine { get; set; }
+
+    public string? Condition { get; set; }
+
+    public bool Verified { get; set; }
+
+    public string? Message { get; set; }
+
+    public BreakpointResult ToResult() => new(Id, FilePath, Line, Verified, Message);
+}
 
 /// <summary>
 /// Result of setting a breakpoint

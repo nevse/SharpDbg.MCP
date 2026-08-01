@@ -125,6 +125,128 @@ public sealed class DebugSessionIntegrationTests
     }
 
     /// <summary>
+    /// Regression: ManagedDebugger.SetBreakpoints has DAP replace semantics - it clears every
+    /// breakpoint in the file before creating the ones passed in. Sending a single line per call
+    /// therefore silently discarded every breakpoint previously set in the same file.
+    /// </summary>
+    [TestMethod]
+    public async Task SetBreakpoint_SecondInSameFile_KeepsTheFirst()
+    {
+        var first = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+        var second = TestPaths.FindMarkerLine("STEP-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var a = session.SetBreakpoint(TestPaths.TestAppSource, first);
+        var b = session.SetBreakpoint(TestPaths.TestAppSource, second);
+
+        Assert.IsTrue(a.Verified, $"First breakpoint not verified: {a.Message}");
+        Assert.IsTrue(b.Verified, $"Second breakpoint not verified: {b.Message}");
+
+        var listed = session.ListBreakpoints();
+        Assert.AreEqual(2, listed.Count, "Both breakpoints in the same file should survive");
+        CollectionAssert.AreEquivalent(
+            new[] { first, second },
+            listed.Select(x => x.Line).ToArray());
+        Assert.IsTrue(listed.All(x => x.Verified));
+
+        // ListBreakpoints reports this session's own bookkeeping, which cannot prove the
+        // breakpoints are armed in the debugger. Stopping at both lines can.
+        var stops = new List<int>();
+        for (var i = 0; i < 2; i++)
+        {
+            stops.Add(LineOf(WaitForStop(session).CurrentLocation));
+            session.Continue();
+        }
+
+        CollectionAssert.AreEquivalent(
+            new[] { first, second },
+            stops,
+            $"Expected to stop at both lines, stopped at: {string.Join(", ", stops)}");
+    }
+
+    private static int LineOf(string? location)
+    {
+        Assert.IsNotNull(location, "Stop reported no location");
+        return int.Parse(location[(location.LastIndexOf(':') + 1)..]);
+    }
+
+    [TestMethod]
+    public async Task RemoveBreakpoint_StopsTheProcessFromBreakingThere()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        var breakpoint = session.SetBreakpoint(TestPaths.TestAppSource, line);
+        WaitForStop(session);
+
+        Assert.IsTrue(session.RemoveBreakpoint(breakpoint.Id));
+        Assert.AreEqual(0, session.ListBreakpoints().Count);
+
+        session.Continue();
+
+        // The line is hit every iteration, so if the breakpoint were still armed the process
+        // would stop again almost immediately instead of producing output.
+        Assert.IsGreaterThan(
+            0,
+            debuggee.CountOutputDuring(ObservationWindow),
+            "Process stopped again after its only breakpoint was removed");
+        Assert.IsTrue(session.GetExecutionState().IsRunning);
+    }
+
+    [TestMethod]
+    public async Task RemoveBreakpoint_LeavesTheOtherBreakpointsInTheFileArmed()
+    {
+        var first = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+        var second = TestPaths.FindMarkerLine("STEP-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        var a = session.SetBreakpoint(TestPaths.TestAppSource, first);
+        session.SetBreakpoint(TestPaths.TestAppSource, second);
+
+        Assert.IsTrue(session.RemoveBreakpoint(a.Id));
+
+        var listed = session.ListBreakpoints();
+        Assert.AreEqual(1, listed.Count);
+        Assert.AreEqual(second, listed[0].Line);
+        Assert.IsTrue(listed[0].Verified, $"Remaining breakpoint lost its binding: {listed[0].Message}");
+
+        var state = WaitForStop(session);
+        Assert.AreEqual($"{TestPaths.TestAppSource}:{second}", state.CurrentLocation);
+    }
+
+    [TestMethod]
+    public async Task RemoveBreakpoint_UnknownId_ReturnsFalse()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        Assert.IsFalse(session.RemoveBreakpoint(4242));
+    }
+
+    [TestMethod]
+    public async Task ListBreakpoints_WithNoneSet_IsEmpty()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        Assert.AreEqual(0, session.ListBreakpoints().Count);
+    }
+
+    /// <summary>
     /// Regression: continuing an already-running process threw CORDBG_E_SUPERFLOUS_CONTINUE
     /// straight out of COM instead of being reported as a no-op.
     /// </summary>

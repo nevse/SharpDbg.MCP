@@ -35,6 +35,12 @@ public static class InputValidation
             throw new ArgumentException($"Line number must be positive, got: {line}", nameof(line));
     }
 
+    public static void ValidateBreakpointId(int breakpointId)
+    {
+        if (breakpointId <= 0)
+            throw new ArgumentException($"Breakpoint ID must be positive, got: {breakpointId}", nameof(breakpointId));
+    }
+
     public static void ValidateExpression(string expression)
     {
         if (string.IsNullOrWhiteSpace(expression))
