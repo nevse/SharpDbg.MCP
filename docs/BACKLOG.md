@@ -5,21 +5,16 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 ## Waiting on upstream
 
-Six defects in SharpDbg and one in the .NET debugger shim limit what this server can do. They are
+Seven defects in SharpDbg and one in the .NET debugger shim limit what this server can do. They are
 tracked in [UPSTREAM.md](UPSTREAM.md) with the evidence, what each one blocks here, and how to tell
 when a fix lands. Nothing in that file is work we can do, which is why it is not listed below.
 
 Short version: an evaluation that runs code in the target can leave the debuggee suspended for good;
-so can a breakpoint hit that lands while that file's breakpoints are being replaced; evaluation
-results cannot be expanded; exception stops cannot be filtered by type or handled-ness; and the test
+so can a breakpoint hit that lands while that file's breakpoints are being replaced, and so can a
+step that reaches code without symbols; evaluation results cannot be expanded; exception stops cannot be filtered by type or handled-ness; and the test
 suite is occasionally killed by a crash inside `libmscordbi` during attach.
 
 ## P2 — capabilities and robustness
-
-### Surface decompiled source
-`OnStopped2` carries a `DecompiledSourceInfo` that is currently discarded, so stopping in code
-without PDBs reports no location at all.
-**Effort: M**
 
 ### Multi-session support is dead code
 `DebugSessionManager.CreateSession/GetSession/CloseSession` are never called; every tool goes
