@@ -5,6 +5,25 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 ## P0 — broken or untrustworthy today
 
+### A breakpoint set right after attach can come back unverified
+`SetBreakpoint` sends the request once and returns whatever the debugger says, but right after
+`attach_to_process` the debuggee's module is not necessarily registered yet, so `SetBreakpoints`
+answers `verified: false` with `The breakpoint will not currently be hit. No symbols have been
+loaded for this document` — even though `GetThreads()` is already non-empty, which is the only thing
+`Attach` waits for. The client has no way to tell this apart from a genuinely unbindable line, and
+attach-then-set-breakpoint is the first thing any caller does.
+
+Found while building the standalone reproduction for
+https://github.com/MattParkerDev/sharpdbg/issues/24: a plain driver hits it every run and has to
+re-send the breakpoint until it binds. The integration tests never caught it because MSTest's
+startup leaves enough slack for the module to register.
+
+Fix in `DebugSession`: after a request comes back unverified, re-send it until it binds or the
+operation timeout expires, rather than passing the transient answer to the caller. Waiting for
+`ManagedDebugger.OnModuleLoaded` before the first `SetBreakpoints` would be the more precise
+version.
+**Effort: S**
+
 ### `Test1.cs` is an empty placeholder
 Delete it. It inflates the test count without asserting anything.
 **Effort: S**
