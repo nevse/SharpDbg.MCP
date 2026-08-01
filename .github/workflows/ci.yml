@@ -43,6 +43,39 @@ jobs:
         name: test-results-${{ matrix.os }}
         path: '**/test-results.trx'
 
+  integration-tests:
+    name: Integration Tests
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      # Report every platform; attach permissions differ per runner
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: '10.0.x'
+
+    # Ubuntu's Yama LSM restricts ptrace to direct children by default, which blocks
+    # ICorDebug from attaching to the debuggee the tests launch.
+    - name: Allow ptrace attach
+      if: runner.os == 'Linux'
+      run: sudo sysctl -w kernel.yama.ptrace_scope=0
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --no-restore --configuration Release
+
+    - name: Integration tests
+      run: dotnet test --no-build --configuration Release --filter "TestCategory=Integration" --verbosity normal
+
   lint:
     name: Code Quality
     runs-on: ubuntu-latest
