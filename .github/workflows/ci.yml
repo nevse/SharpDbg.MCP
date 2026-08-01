@@ -31,8 +31,10 @@ jobs:
     - name: Build
       run: dotnet build --no-restore --configuration Release
 
+    # Integration tests attach a real ICorDebug debugger to a child process, which hosted
+    # runners do not reliably permit. Run them locally with ./scripts/test-integration.sh
     - name: Test
-      run: dotnet test --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx"
+      run: dotnet test --no-build --configuration Release --verbosity normal --filter "TestCategory!=Integration" --logger "trx;LogFileName=test-results.trx"
 
     - name: Upload test results
       if: always()

@@ -3,6 +3,7 @@
     <Project Path="src/SharpDbg.MCP/SharpDbg.MCP.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/SharpDbg.MCP.TestApp/SharpDbg.MCP.TestApp.csproj" />
     <Project Path="tests/SharpDbg.MCP.Tests/SharpDbg.MCP.Tests.csproj" />
   </Folder>
 </Solution>

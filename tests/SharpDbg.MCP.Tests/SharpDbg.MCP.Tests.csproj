@@ -15,6 +15,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SharpDbg.MCP\SharpDbg.MCP.csproj" />
+    <!-- Built alongside the tests as a debuggee; not linked, the tests launch it as a process -->
+    <ProjectReference Include="..\SharpDbg.MCP.TestApp\SharpDbg.MCP.TestApp.csproj"
+                     ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

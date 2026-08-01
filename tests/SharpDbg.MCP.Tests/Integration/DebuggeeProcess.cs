@@ -1,0 +1,110 @@
+using System.Diagnostics;
+
+namespace SharpDbg.MCP.Tests.Integration;
+
+/// <summary>
+/// Starts SharpDbg.MCP.TestApp as a real debuggee and tracks its output, so tests can assert
+/// whether the process is actually suspended rather than only trusting the debugger's own state.
+/// </summary>
+internal sealed class DebuggeeProcess : IDisposable
+{
+    private readonly Process _process;
+    private int _outputLines;
+
+    private DebuggeeProcess(Process process)
+    {
+        _process = process;
+    }
+
+    public int ProcessId => _process.Id;
+
+    /// <summary>
+    /// Number of lines the debuggee has printed so far
+    /// </summary>
+    public int OutputLines => Volatile.Read(ref _outputLines);
+
+    public static DebuggeeProcess Start()
+    {
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add(TestPaths.TestAppAssembly);
+
+        var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Failed to start the debuggee process");
+
+        var debuggee = new DebuggeeProcess(process);
+
+        // The pipe must be drained continuously - a full stdout buffer would block the debuggee
+        // and look exactly like a process suspended on a breakpoint.
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data != null)
+                Interlocked.Increment(ref debuggee._outputLines);
+        };
+        process.ErrorDataReceived += (_, _) => { };
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        debuggee.WaitUntilRunning();
+        return debuggee;
+    }
+
+    /// <summary>
+    /// Wait until the debuggee has produced output, so it is past startup before we attach
+    /// </summary>
+    private void WaitUntilRunning()
+    {
+        if (!SpinUntil(() => OutputLines > 1, TimeSpan.FromSeconds(30)))
+            throw new InvalidOperationException("Debuggee process did not start producing output");
+    }
+
+    /// <summary>
+    /// Returns the number of lines printed during the given window. Zero means the process is
+    /// genuinely suspended.
+    /// </summary>
+    public int CountOutputDuring(TimeSpan window)
+    {
+        var before = OutputLines;
+        Thread.Sleep(window);
+        return OutputLines - before;
+    }
+
+    public static bool SpinUntil(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (true)
+        {
+            if (condition())
+                return true;
+
+            if (DateTime.UtcNow >= deadline)
+                return false;
+
+            Thread.Sleep(50);
+        }
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            if (!_process.HasExited)
+                _process.Kill(entireProcessTree: true);
+
+            _process.WaitForExit(5000);
+        }
+        catch (InvalidOperationException)
+        {
+            // Process already gone
+        }
+        finally
+        {
+            _process.Dispose();
+        }
+    }
+}

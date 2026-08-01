@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <!-- Integration tests bind breakpoints through the PDB, so portable symbols are required -->
+    <DebugType>portable</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <!-- Keep the IL close to the source so breakpoint lines resolve predictably -->
+    <Optimize>false</Optimize>
+  </PropertyGroup>
+
+</Project>
