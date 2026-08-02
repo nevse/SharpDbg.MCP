@@ -9,8 +9,14 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="ModelContextProtocol" />
 
-    <!-- Debugging Infrastructure -->
-    <PackageReference Include="SharpDbg" />
+    <!-- Debugging Infrastructure. SharpDbgSourcePath swaps the package for a source clone,
+         see Directory.Build.props -->
+    <PackageReference Include="SharpDbg" Condition="'$(UseLocalSharpDbg)' != 'true'" />
+    <ProjectReference Include="$(SharpDbgSourcePath)\src\SharpDbg.Infrastructure\SharpDbg.Infrastructure.csproj"
+                      Condition="'$(UseLocalSharpDbg)' == 'true'" />
+    <!-- Only the SharpDbg packaging project declares the native shim, so a source reference has to
+         bring it along or every attach fails inside ClrDebugExtensions -->
+    <PackageReference Include="Microsoft.Diagnostics.DbgShim" Condition="'$(UseLocalSharpDbg)' == 'true'" />
 
     <!-- Markdown parsing for Phase 1 -->
     <PackageReference Include="Markdig" />

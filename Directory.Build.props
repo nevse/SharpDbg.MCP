@@ -10,6 +10,14 @@
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
 
+    <!-- Build against a clone of https://github.com/MattParkerDev/sharpdbg instead of the package,
+         for diagnosing upstream defects (docs/UPSTREAM.md). Set the path to the clone as an
+         environment variable or on the command line:
+           dotnet build -p:SharpDbgSourcePath=/path/to/sharpdbg
+         Unset, everything builds against the SharpDbg version in Directory.Packages.props. -->
+    <UseLocalSharpDbg Condition="'$(SharpDbgSourcePath)' != ''">true</UseLocalSharpDbg>
+    <DefineConstants Condition="'$(UseLocalSharpDbg)' == 'true'">$(DefineConstants);SHARPDBG_LOCAL</DefineConstants>
+
     <!-- Repository and package metadata -->
     <Authors>SharpDbg MCP Contributors</Authors>
     <Copyright>Copyright © 2026 SharpDbg MCP Contributors</Copyright>

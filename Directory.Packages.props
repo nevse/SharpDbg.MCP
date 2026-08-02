@@ -11,6 +11,8 @@
 
     <!-- Debugging Infrastructure -->
     <PackageVersion Include="SharpDbg" Version="0.1.8" />
+    <!-- Native shim, only pulled in when building against a SharpDbg source clone -->
+    <PackageVersion Include="Microsoft.Diagnostics.DbgShim" Version="9.0.661903" />
 
     <!-- Markdown Processing -->
     <PackageVersion Include="Markdig" Version="0.44.0" />
