@@ -32,8 +32,7 @@ public static partial class DebuggerErrors
 
         [Cor.CORDBG_E_SUPERFLOUS_CONTINUE] =
             "The process was already running, so there was nothing to resume. Check " +
-            "get_process_status before continuing. Note that a preceding expression evaluation can " +
-            "leave the process suspended while the debugger considers it running.",
+            "get_process_status before continuing.",
 
         // Fixed in SharpDbg 0.1.8, kept because the explanation is what makes it recognisable if a
         // handle is ever released twice again
@@ -86,6 +85,21 @@ public static partial class DebuggerErrors
     };
 
     /// <summary>
+    /// Failures the debugger reports as plain exceptions rather than HRESULTs, matched on their text
+    /// because that is all they carry.
+    /// </summary>
+    private static readonly (string Fragment, string Explanation)[] MessageExplanations =
+    [
+        // SharpDbg 0.1.9's guard in HandleContinueRequest. Its own text asks the caller to raise an
+        // issue upstream, which is not something an MCP client can act on.
+        ("process is still stopped",
+            "The resume did not take: the debuggee is stopped with a callback the debugger never " +
+            "finished, so there is nothing to continue. Retrying does not help. This happens when a " +
+            "step reaches code with no symbols while just_my_code is off; detach_from_process " +
+            "releases the debuggee, after which you can attach again with just_my_code on.")
+    ];
+
+    /// <summary>
     /// The explanation for a known ICorDebug HRESULT, or null when the failure is something else
     /// </summary>
     public static string? Explain(Exception exception)
@@ -96,6 +110,15 @@ public static partial class DebuggerErrors
         {
             if (Explanations.TryGetValue(current.HResult, out var explanation))
                 return explanation;
+        }
+
+        for (var current = exception; current != null; current = current.InnerException)
+        {
+            foreach (var (fragment, explanation) in MessageExplanations)
+            {
+                if (current.Message.Contains(fragment, StringComparison.Ordinal))
+                    return explanation;
+            }
         }
 
         // A wrapper keeps its own HResult, so the original may only survive as text in the message

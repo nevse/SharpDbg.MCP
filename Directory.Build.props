@@ -16,7 +16,6 @@
            dotnet build -p:SharpDbgSourcePath=/path/to/sharpdbg
          Unset, everything builds against the SharpDbg version in Directory.Packages.props. -->
     <UseLocalSharpDbg Condition="'$(SharpDbgSourcePath)' != ''">true</UseLocalSharpDbg>
-    <DefineConstants Condition="'$(UseLocalSharpDbg)' == 'true'">$(DefineConstants);SHARPDBG_LOCAL</DefineConstants>
 
     <!-- Repository and package metadata -->
     <Authors>SharpDbg MCP Contributors</Authors>

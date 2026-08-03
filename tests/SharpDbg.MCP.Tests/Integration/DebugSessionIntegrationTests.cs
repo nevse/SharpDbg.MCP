@@ -383,16 +383,16 @@ public sealed class DebugSessionIntegrationTests
     }
 
     /// <summary>
-    /// Pins what is left of sharpdbg#24 after the fix in 0.1.8. Expanding a member whose value needs
-    /// function evaluation - a record's EqualityContract, which is a RuntimeType - no longer leaves a
-    /// disposed handle behind, so Continue succeeds instead of failing with 0x80131C01. But the
-    /// evaluation still leaves the process needing a second Continue, and the first one reports
-    /// success, so a caller is told the debuggee runs while it is suspended.
-    /// When this test starts failing the package has fixed that too, and the warnings on
-    /// expand_variable and evaluate_expression can go.
+    /// A function evaluation in the debuggee must leave the process able to resume on one continue.
+    /// It did not until 0.1.9, which is the whole of sharpdbg#24: expanding a member whose value has
+    /// to be evaluated - a record's EqualityContract, which is a RuntimeType - first poisoned the
+    /// session with a disposed handle, and then, once that was fixed, still left the process
+    /// suspended while reporting that it had resumed. Both are what UPSTREAM.md defects 1 and 2 were.
+    /// This checks the debuggee by watching its output rather than by asking the debugger, because
+    /// what went wrong before was precisely that the debugger's answer was wrong.
     /// </summary>
     [TestMethod]
-    public async Task ExpandVariable_MemberNeedingEvaluation_StillNeedsASecondContinue()
+    public async Task ExpandVariable_MemberNeedingEvaluation_ResumesOnOneContinue()
     {
         var line = TestPaths.FindMarkerLine("EXPAND-TARGET");
 
@@ -411,34 +411,25 @@ public sealed class DebugSessionIntegrationTests
         var needsEvaluation = members.Single(m => m.VariablesReference > 0);
         var deeper = await session.ExpandVariable(needsEvaluation.VariablesReference);
 
-        // The expansion itself works, and used to be what poisoned the session
         Assert.IsNotEmpty(deeper);
 
-        Assert.IsTrue(session.Continue(), "Continue no longer fails after an evaluated expansion");
-        Assert.AreEqual(
-            0,
-            debuggee.CountOutputDuring(ObservationWindow),
-            "The debuggee resumed on the first continue, so the imbalance is fixed - see the summary");
-
-        // Which leaves the session claiming to run while the process is suspended
-        Assert.IsTrue(session.GetExecutionState().IsRunning);
-
-        // Detaching still releases it, as it did before
-        session.Detach();
+        // Remove the breakpoint first, so the only reason the debuggee could stay quiet is the
+        // evaluation - otherwise it stops again on the next iteration and prints nothing either way
+        Assert.IsTrue(session.RemoveBreakpoint(session.ListBreakpoints()[0].Id));
+        Assert.IsTrue(session.Continue());
         Assert.IsGreaterThan(
             0,
             debuggee.CountOutputDuring(ObservationWindow),
-            "Detach failed to release a debuggee left suspended by the evaluation");
+            "The debuggee did not resume on the first continue - see UPSTREAM.md defect 2");
     }
 
     /// <summary>
-    /// Pins a SharpDbg 0.1.7 limitation: ManagedDebugger.Evaluate hardcodes variablesReference to
-    /// 0 on every path, so an evaluated object cannot be expanded - only variables returned by
-    /// GetVariables carry a usable reference. When this test starts failing the package has gained
-    /// the capability, and ExpandVariable's description should stop excluding it.
+    /// An evaluated object must come back with a reference that expand_variable accepts, which is
+    /// what makes evaluate_expression useful for anything but printing. Upstream hardcoded it to 0
+    /// until 0.1.9 - UPSTREAM.md defect 3.
     /// </summary>
     [TestMethod]
-    public async Task EvaluateExpression_DoesNotYetYieldAnExpandableReference()
+    public async Task EvaluateExpression_ObjectResult_YieldsAnExpandableReference()
     {
         var line = TestPaths.FindMarkerLine("EXPAND-TARGET");
 
@@ -451,6 +442,36 @@ public sealed class DebugSessionIntegrationTests
 
         var frames = session.GetStackTrace(state.StoppedThreadId!.Value);
         var evaluated = await session.EvaluateExpression("point", frames[0].Id);
+
+        Assert.IsGreaterThan(0, evaluated.VariablesReference);
+
+        // The reference has to be usable, not merely non-zero
+        var members = await session.ExpandVariable(evaluated.VariablesReference);
+        var x = members.SingleOrDefault(m => m.Name == "X");
+        Assert.IsNotNull(x, $"Expected member X, got: {string.Join(", ", members.Select(m => m.Name))}");
+
+        var next = (await session.GetVariables(frames[0].Id)).Single(v => v.Name == "next");
+        Assert.AreEqual(next.Value, x.Value);
+    }
+
+    /// <summary>
+    /// A primitive result has nothing to expand, so its reference must stay 0 - a caller uses that
+    /// to decide whether expanding is worth a round trip.
+    /// </summary>
+    [TestMethod]
+    public async Task EvaluateExpression_PrimitiveResult_YieldsNoReference()
+    {
+        var line = TestPaths.FindMarkerLine("EXPAND-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        var state = WaitForStop(session);
+
+        var frames = session.GetStackTrace(state.StoppedThreadId!.Value);
+        var evaluated = await session.EvaluateExpression("next + 1", frames[0].Id);
 
         Assert.AreEqual(0, evaluated.VariablesReference);
     }

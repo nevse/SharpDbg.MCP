@@ -189,13 +189,15 @@ reaching for it.
 
 With Just My Code on, a step never leaves your own code. With it off, a step can land in a module that
 has no symbols — the framework, or any assembly shipped without a PDB — and the debugger then tries to
-decompile that module to work out where it stopped. Every route through that decompilation fails in
-SharpDbg 0.1.7: the decompiler is not a declared dependency of the package, decompiling
-`System.Private.CoreLib` throws, and an assembly without a PDB that still counts as user code is
-refused outright. The failure is caught and logged, after which the step never completes and nothing
-is reported, so the process stays suspended and only `detach_from_process` releases it. A half-written
-PDB is also left in `%LOCALAPPDATA%/Temp/SharpIdeSymbolCache`, which makes every later step fail the
-same way until that directory is deleted.
+decompile that module to work out where it stopped. That decompilation cannot succeed in SharpDbg
+0.1.9: `System.Private.CoreLib`, which is where a step out of user code lands first, takes 12–21
+seconds to decompile and then fails with a `NullReferenceException` inside the debugger. The failure
+is caught and logged, the step is retried, and it fails the same way every time — measured at 10
+attempts in two minutes, with the debuggee suspended throughout and a zero-byte
+`.decompiled.pdb` left in the symbol cache. Only `detach_from_process` releases it.
+
+A `continue_execution` in that state fails rather than resuming, and the error explains that
+detaching is the way out.
 
 The details are in [docs/UPSTREAM.md](docs/UPSTREAM.md) defect 6, along with what changes here once it
 is fixed upstream. Until then, stopping in code without symbols reports no location at all — which is
@@ -444,16 +446,13 @@ Expand a `variables_reference` into its members, which may themselves carry refe
 further. Works only while the process is stopped.
 
 **Parameters:**
-- `variables_reference` (int): Reference from `get_variables` or from this tool
+- `variables_reference` (int): Reference from `get_variables`, from `evaluate_expression`, or from
+  this tool
 
 **Returns:** Array of members with names, values, types, and further references.
 
-> **Warning:** expanding a member whose value has to be evaluated in the process — a record's
-> `EqualityContract`, or anything else of type `RuntimeType` — currently leaves the debugger holding
-> a disposed handle, after which `continue_execution` always fails and the process stays suspended.
-> Only `detach_from_process` releases it. This is a SharpDbg defect, reported as
-> [MattParkerDev/sharpdbg#24](https://github.com/MattParkerDev/sharpdbg/issues/24). Prefer expanding
-> your own data.
+A reference only applies to the stop it was taken in, so expand while the process is still stopped
+and take fresh references after every stop.
 
 #### `continue_execution`
 Resume process execution until next breakpoint or exit.
@@ -500,33 +499,28 @@ Evaluate a C# expression in the context of a stack frame.
 - `expression` (string): C# expression to evaluate (e.g., "user.Name", "x + y")
 - `frame_id` (int): Stack frame ID for evaluation context
 
-**Returns:** Evaluation result with value, type, and variables reference.
+**Returns:** Evaluation result with value, type, and variables reference. When the result is an
+object, the reference is non-zero and can be walked with `expand_variable`.
 
-> **Warning:** an expression that has to run code in the target — a property getter, `ToString()`,
-> any method call — currently leaves the debuggee needing a second `continue_execution` before it
-> really resumes, and after several such evaluations it may not resume at all. The first
-> `continue_execution` still reports `resumed: true`, so the process looks running while it is
-> suspended. Reading fields through `get_variables` and `expand_variable` does not have this problem.
-> This is a SharpDbg defect, related to
-> [MattParkerDev/sharpdbg#24](https://github.com/MattParkerDev/sharpdbg/issues/24).
+Expressions that run code in the target — a property getter, `ToString()`, any method call — are
+allowed. Up to SharpDbg 0.1.8 these left the debuggee suspended while reporting that it had resumed;
+that is fixed in 0.1.9, which this server requires.
 
 ### Limitations & Planned Features
 
 **Current Limitations (Require Upstream SharpDbg Changes):**
-- **Running code in the target suspends the debuggee** - any evaluation of a property, `ToString()`
-  or method call, and expanding a member that needs one; see the warnings under
-  `evaluate_expression` and `expand_variable`
-  ([MattParkerDev/sharpdbg#24](https://github.com/MattParkerDev/sharpdbg/issues/24))
 - **Break on unhandled exceptions only** - a stop does not say whether the program will handle the
   exception, so exception breaks can only be all or nothing (`set_exception_break_mode`)
-- **Filtering exception breaks by type** - reading the exception's type needs code to run in the
-  target, which hits the defect above
-- **Expanding an evaluation result** - `evaluate_expression` never returns a usable
-  `variables_reference`, so only variables from `get_variables` can be walked
+- **Filtering exception breaks by type** - reading the exception's type is possible but the stop
+  itself carries no type, so there is nothing to filter on before stopping
+- **No source location in code without symbols** - a stop in a module with no PDB reports no file or
+  line, because the decompilation that would supply one cannot run
 - **Watch Expressions** - Continuous monitoring of expression values
 
+The evidence for each of these, and how to tell when one is fixed, is in
+[docs/UPSTREAM.md](docs/UPSTREAM.md).
+
 **Not Implemented Yet:**
-- Multi-session support (debug multiple processes simultaneously)
 - Hot reload support (modify code while debugging)
 - Data breakpoints (break when memory changes)
 
@@ -688,8 +682,8 @@ Every tool reports a failure the same way:
 ```json
 {
   "success": false,
-  "error": "Handle has been disposed. (0x80131C01)",
-  "explanation": "The debugger is holding a handle it has already released, which an earlier evaluation ... This never recovers on retry: the debuggee stays suspended until detach_from_process releases it, after which you can attach again."
+  "error": "Returned from a call to Continue that was not matched with a stopping event. (0x8013132F)",
+  "explanation": "The process was already running, so there was nothing to resume. Check get_process_status before continuing."
 }
 ```
 

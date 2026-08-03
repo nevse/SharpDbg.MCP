@@ -985,15 +985,8 @@ public class DebugSession : IDisposable
         var debugger = RequireDebugger();
 
         // Call async methods outside the lock to avoid deadlocks
-#if SHARPDBG_LOCAL
-        // Post-0.1.8 upstream returns a VariableInfo, with the variables reference filled in
         var evaluated = await debugger.Evaluate(expression, frameId).WaitAsync(_evaluationTimeout);
         return new EvaluationResult(evaluated.Value, evaluated.Type, evaluated.VariablesReference);
-#else
-        var (result, type, variablesReference) =
-            await debugger.Evaluate(expression, frameId).WaitAsync(_evaluationTimeout);
-        return new EvaluationResult(result, type, variablesReference);
-#endif
     }
 
     /// <summary>

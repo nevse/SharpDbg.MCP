@@ -718,13 +718,8 @@ public sealed class DebuggingTools
 
     [McpServerTool, Description(
         "Expand a variables_reference into its members, which may themselves carry references to " +
-        "expand further. References come from get_variables and from this tool; evaluate_expression " +
-        "does not currently return one. Expand while still stopped. " +
-        "WARNING: expanding a member whose value has to be evaluated in the process - a record's " +
-        "EqualityContract, or anything else of type RuntimeType - leaves the process needing a " +
-        "second continue_execution before it really resumes. The first one reports resumed=true " +
-        "either way, so if wait_for_stop then reports nothing while the process looks idle, call " +
-        "continue_execution again. Expanding your own fields does not do this.")]
+        "expand further. References come from get_variables, from evaluate_expression and from this " +
+        "tool. Expand while still stopped - a reference only applies to the stop it was taken in.")]
     public string ExpandVariable(int variables_reference, int? session_id = null)
     {
         try
@@ -952,13 +947,10 @@ public sealed class DebuggingTools
     }
 
     [McpServerTool, Description(
-        "Evaluate a C# expression in the context of a stack frame. " +
-        "WARNING: an expression that has to run code in the target - a property getter, ToString(), " +
-        "any method call - leaves the debuggee needing a second continue_execution before it really " +
-        "resumes, and after several such evaluations it may not resume at all. The first " +
-        "continue_execution reports resumed=true regardless, so the process looks running while it " +
-        "is suspended; calling continue_execution again is what releases it. An expression that " +
-        "fails to evaluate does not do this, and neither does reading fields through get_variables.")]
+        "Evaluate a C# expression in the context of a stack frame. An expression that runs code in " +
+        "the target - a property getter, ToString(), any method call - is allowed and does not cost " +
+        "the session. When the result is an object, variables_reference is non-zero and can be " +
+        "walked with expand_variable.")]
     public string EvaluateExpression(string expression, int frame_id, int? session_id = null)
     {
         try

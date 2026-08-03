@@ -5,14 +5,25 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 ## Waiting on upstream
 
-Seven defects in SharpDbg and one in the .NET debugger shim limit what this server can do. They are
-tracked in [UPSTREAM.md](UPSTREAM.md) with the evidence, what each one blocks here, and how to tell
-when a fix lands. Nothing in that file is work we can do, which is why it is not listed below.
+Defects in SharpDbg and one in the .NET debugger shim limit what this server can do. They are tracked
+in [UPSTREAM.md](UPSTREAM.md) with the evidence, what each one blocks here, and how to tell when a fix
+lands.
 
-Short version: an evaluation that runs code in the target can leave the debuggee suspended for good;
-so can a breakpoint hit that lands while that file's breakpoints are being replaced, and so can a
-step that reaches code without symbols; evaluation results cannot be expanded; exception stops cannot be filtered by type or handled-ness; and the test
-suite is occasionally killed by a crash inside `libmscordbi` during attach.
+Short version, on SharpDbg 0.1.9: a breakpoint hit that lands while that file's breakpoints are being
+replaced can leave the debuggee suspended for good, and so can a step that reaches code without
+symbols; exception stops cannot be filtered by type or handled-ness; and the test suite is
+occasionally killed by a crash inside `libmscordbi` during attach.
+
+Two of those — the replaced-breakpoint freeze and the modules-dictionary race — are **fixed on a local
+branch of a SharpDbg clone**, `fix/continue-after-failed-event-handler`, three commits with a draft
+pull-request description at the bottom of UPSTREAM.md. Deciding whether to send it is the open item.
+
+### Consider a `get_exception_info` tool
+Now possible: reading an exception's message, type, HResult, source and stack trace costs four
+function evaluations in the target, which was ruinous while UPSTREAM.md defect 2 was open and is
+merely slow on 0.1.9. The stop still does not say the exception's type, so this is the only way to
+learn it.
+**Effort: S**
 
 ## P3 — distribution
 
