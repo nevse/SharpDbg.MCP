@@ -187,9 +187,10 @@ The server can be configured using environment variables. Add them to your Claud
 `SHARPDBG_JUST_MY_CODE=false` currently freezes the debuggee, and it is worth knowing why before
 reaching for it.
 
-With Just My Code on, a step never leaves your own code. With it off, a step can land in a module that
-has no symbols — the framework, or any assembly shipped without a PDB — and the debugger then tries to
-decompile that module to work out where it stopped. That decompilation cannot succeed in SharpDbg
+With Just My Code on, a step keeps going until it reaches code you have symbols for, so it never
+surfaces outside your own code. With it off, a step can stop in a module that has no symbols — the
+framework, or any assembly shipped without a PDB — and the debugger then tries to decompile that
+module to work out where it stopped. That decompilation cannot succeed in SharpDbg
 0.1.9: `System.Private.CoreLib`, which is where a step out of user code lands first, takes 12–21
 seconds to decompile and then fails with a `NullReferenceException` inside the debugger. The failure
 is caught and logged, the step is retried, and it fails the same way every time — measured at 10
