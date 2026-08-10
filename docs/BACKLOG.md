@@ -28,6 +28,43 @@ merely slow on 0.1.9. The stop still does not say the exception's type, so this 
 learn it.
 **Effort: S**
 
+## P1 — drive SharpDbg through its supported surface
+
+`DebugSession` calls `ManagedDebugger` directly. That type is public but is **not** the supported API
+of the package: the readme documents `SharpDbgInMemory.NewDebugAdapterStreams()` plus a
+`DebugProtocolHost`, and every piece of synchronisation SharpDbg has lives in `DebugAdapter`, which
+that path goes through and ours does not. Confirmed by the maintainer in
+[#29](https://github.com/MattParkerDev/sharpdbg/issues/29).
+
+It already costs us. On 0.1.10 the same ten expansions return the internal error 10 times out of 10
+through `ManagedDebugger` and 0 times out of 10 through the DAP host, which is what blocks the bump.
+It has also broken us twice on internal signature changes - `Evaluate`'s return type, and the
+`AsyncStepper` constructor - neither of which a supported consumer would have noticed.
+
+Everything we call maps one-to-one onto requests `DebugAdapter` already handles:
+
+| `DebugSession` uses | DAP request |
+|---|---|
+| `Attach`, `ConfigurationDone` | `Attach` (`processId` and `justMyCode` as configuration properties), `ConfigurationDone` |
+| `SetBreakpoints`, `SetFunctionBreakpoints` | `SetBreakpoints`, `SetFunctionBreakpoints` |
+| `GetThreads`, `GetStackTrace`, `GetScopes`, `GetVariables` | `Threads`, `StackTrace`, `Scopes`, `Variables` |
+| `Evaluate` | `Evaluate` |
+| `HandleContinueRequest`, `Pause`, `StepNext`/`StepIn`/`StepOut` | `Continue`, `Pause`, `Next`/`StepIn`/`StepOut` |
+| `Disconnect` | `Disconnect` |
+| `OnStopped`/`OnStopped2`, `OnExited`, `OnOutput`, `OnBreakpointChanged`, `OnContinued` | `Stopped`, `Exited`/`Terminated`, `Output`, `Breakpoint`, `Continued` events |
+
+One real gap: `OnStopped2` hands us the file, line and column with the stop, while a DAP `Stopped`
+event carries only the thread and the reason - the location needs a `StackTrace` request after it.
+That changes how `DebugSession` records a stop, not what it can report. `SetExceptionBreakpoints` is
+also handled upstream and may be able to replace our own ignore-and-resume implementation of
+`ExceptionBreakMode`.
+
+No new packages needed: `SharpDbg.InMemory.dll`, `SharpDbg.Application.dll` and
+`Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.dll` are already in our build output. The
+integration tests target `DebugSession` rather than the debugger, so they carry over as the safety net
+for the move.
+**Effort: L**
+
 ## P3 — distribution
 
 ### Ship on NuGet and run via `dnx`
