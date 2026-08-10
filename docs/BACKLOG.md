@@ -9,14 +9,17 @@ Defects in SharpDbg and one in the .NET debugger shim limit what this server can
 in [UPSTREAM.md](UPSTREAM.md) with the evidence, what each one blocks here, and how to tell when a fix
 lands.
 
-Short version, on SharpDbg 0.1.9: a breakpoint hit that lands while that file's breakpoints are being
+Short version, on SharpDbg 0.1.9 (0.1.10 is skipped, it regresses evaluation - see UPSTREAM.md defect 9): a breakpoint hit that lands while that file's breakpoints are being
 replaced can leave the debuggee suspended for good, and so can a step that reaches code without
 symbols; exception stops cannot be filtered by type or handled-ness; and the test suite is
 occasionally killed by a crash inside `libmscordbi` during attach.
 
-Two of those — the replaced-breakpoint freeze and the modules-dictionary race — are **fixed on a local
-branch of a SharpDbg clone**, `fix/continue-after-failed-event-handler`, three commits with a draft
-pull-request description at the bottom of UPSTREAM.md. Deciding whether to send it is the open item.
+The recovery half of the replaced-breakpoint freeze went upstream as
+[#27](https://github.com/MattParkerDev/sharpdbg/pull/27) and landed in 0.1.10. The other two — the
+throw in `HandleBreakpoint` itself and the modules-dictionary race — are **fixed on a local branch of a
+SharpDbg clone**, `fix/continue-after-failed-event-handler-on-main`, and not sent yet.
+
+The 0.1.10 regression is [#29](https://github.com/MattParkerDev/sharpdbg/issues/29).
 
 ### Consider a `get_exception_info` tool
 Now possible: reading an exception's message, type, HResult, source and stack trace costs four
