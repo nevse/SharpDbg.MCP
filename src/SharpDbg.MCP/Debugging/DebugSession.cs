@@ -1,5 +1,4 @@
 using SharpDbg.Infrastructure.Debugger;
-using SharpDbg.Infrastructure.Debugger.Models.Response;
 using SharpDbg.MCP.Configuration;
 using SharpDbg.MCP.Logging;
 
@@ -836,7 +835,9 @@ public class DebugSession : IDisposable
     /// </summary>
     public List<StackFrameInfo> GetStackTrace(int threadId)
     {
-        return RequireDebugger().GetStackTrace(threadId);
+        return RequireDebugger().GetStackTrace(threadId)
+            .Select(f => new StackFrameInfo(f.Id, f.Name, f.Line, f.EndLine, f.Column, f.EndColumn, f.Source))
+            .ToList();
     }
 
     /// <summary>
@@ -860,9 +861,9 @@ public class DebugSession : IDisposable
         // Call async methods outside the lock to avoid deadlocks
         var scopes = debugger.GetScopes(frameId);
         if (scopes.Count == 0)
-            return new List<VariableInfo>();
+            return [];
 
-        return await debugger.GetVariables(scopes[0].VariablesReference);
+        return Map(await debugger.GetVariables(scopes[0].VariablesReference));
     }
 
     /// <summary>
@@ -874,7 +875,19 @@ public class DebugSession : IDisposable
         var debugger = RequireDebugger();
 
         // Call async methods outside the lock to avoid deadlocks
-        return await debugger.GetVariables(variablesReference);
+        return Map(await debugger.GetVariables(variablesReference));
+    }
+
+    /// <summary>
+    /// The debugger's own variable shape, translated to ours. Keeping our surface in our own types is
+    /// what lets the engine underneath change - see the backlog item on moving to the DAP adapter.
+    /// </summary>
+    private static List<VariableInfo> Map(
+        IEnumerable<SharpDbg.Infrastructure.Debugger.Models.Response.VariableInfo> variables)
+    {
+        return variables
+            .Select(v => new VariableInfo(v.Name, v.Value, v.Type, v.VariablesReference))
+            .ToList();
     }
 
     /// <summary>
@@ -1298,5 +1311,28 @@ public record ThreadInfo(
 /// </summary>
 public record EvaluationResult(
     string Result,
+    string? Type,
+    int VariablesReference);
+
+/// <summary>
+/// One frame of a stack trace. Ours rather than the debugger's, so the type the tools and tests see
+/// does not change shape when an unsupported internal does.
+/// </summary>
+public record StackFrameInfo(
+    int Id,
+    string Name,
+    int Line,
+    int EndLine,
+    int Column,
+    int EndColumn,
+    string? Source);
+
+/// <summary>
+/// A variable, or a member of one. A non-zero VariablesReference can be expanded, and only until
+/// the process resumes.
+/// </summary>
+public record VariableInfo(
+    string Name,
+    string Value,
     string? Type,
     int VariablesReference);
