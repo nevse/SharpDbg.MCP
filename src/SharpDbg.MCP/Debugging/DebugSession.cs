@@ -1,4 +1,5 @@
-using SharpDbg.Infrastructure.Debugger;
+using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol;
+
 using SharpDbg.MCP.Configuration;
 using SharpDbg.MCP.Logging;
 
@@ -36,11 +37,13 @@ public class DebugSession : IDisposable
     // caller can pass any id to RemoveBreakpoint without tracking which kind it was.
     private readonly Dictionary<int, TrackedFunctionBreakpoint> _functionBreakpoints = new();
     private int _nextBreakpointId = 1;
-    private ManagedDebugger? _debugger;
+    private DapDebugger? _debugger;
     private int? _attachedProcessId;
     private bool _disposed;
     private bool _isRunning;
     private string? _currentLocation;
+    // A DAP stop reports no location; it is fetched on demand, see ResolveStopLocation
+    private bool _locationResolved = true;
     private string? _lastStopReason;
     private int? _lastStoppedThreadId;
     private BreakpointHitInfo? _lastBreakpoint;
@@ -137,7 +140,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public async Task Attach(int processId)
     {
-        ManagedDebugger debugger;
+        DapDebugger debugger;
 
         lock (_stateLock)
         {
@@ -149,13 +152,9 @@ public class DebugSession : IDisposable
 
             McpLogger.LogDebugSessionEvent(_sessionId, "Attaching", $"Process ID: {processId}");
 
-            debugger = new ManagedDebugger(LogMessage);
+            debugger = new DapDebugger(LogMessage);
 
-            // Subscribe to debugger events. OnStopped only reports pause/exception stops; breakpoint
-            // hits and completed steps arrive on OnStopped2 (which also carries the source
-            // location), so both must be handled to observe every stop.
             debugger.OnStopped += OnDebuggerStopped;
-            debugger.OnStopped2 += OnDebuggerStoppedAtLocation;
             debugger.OnContinued += OnDebuggerContinued;
             debugger.OnExited += OnDebuggerExited;
             debugger.OnOutput += OnDebuggerOutput;
@@ -172,12 +171,11 @@ public class DebugSession : IDisposable
 
         try
         {
-            debugger.Attach(processId, _justMyCode);
-            await debugger.ConfigurationDone();
+            await debugger.Attach(processId, _justMyCode, _operationTimeout);
 
-            // ConfigurationDone hands the attach to a fire-and-forget Task.Run, so the process is
-            // still unusable when it returns. GetThreads stays empty until the process exists,
-            // which makes it the cheapest signal that the attach has actually landed.
+            // The attach is handed to a fire-and-forget task inside the adapter, so the process is
+            // still unusable when configurationDone returns. Threads stay empty until the process
+            // exists, which makes it the cheapest signal that the attach has actually landed.
             if (!WaitFor(() => debugger.GetThreads().Count > 0, _operationTimeout))
                 throw new TimeoutException($"Timed out waiting to attach to process {processId}");
 
@@ -215,6 +213,11 @@ public class DebugSession : IDisposable
                 _isRunning = false;
                 _lastStoppedThreadId = threadId;
                 _lastStopReason = reason;
+
+                // A DAP stop carries no location, and this is the protocol's reader thread, which is
+                // also what reads request responses - asking for the stack here would deadlock. The
+                // location is fetched by the first caller that wants it.
+                _locationResolved = false;
             }
         }
 
@@ -245,12 +248,12 @@ public class DebugSession : IDisposable
             {
                 try
                 {
-                    ManagedDebugger? debugger;
+                    DapDebugger? debugger;
 
                     lock (_stateLock)
                         debugger = _attachedProcessId.HasValue ? _debugger : null;
 
-                    debugger?.HandleContinueRequest();
+                    debugger?.Continue(threadId);
                 }
                 catch (Exception ex)
                 {
@@ -274,21 +277,56 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Handles stops that carry a source location (breakpoint hits and completed steps)
+    /// Fills in where the debuggee stopped, by asking for the top of the stack. A DAP stop event
+    /// carries only a thread and a reason, so this is the location's only source; it is done here,
+    /// on a caller's thread, because it cannot be done on the one the event arrived on.
     /// </summary>
-    private void OnDebuggerStoppedAtLocation(
-        int threadId,
-        string filePath,
-        int line,
-        int column,
-        string reason,
-        DecompiledSourceInfo? decompiledSource)
+    private void ResolveStopLocation()
     {
+        int threadId;
+        string? reason;
+
         lock (_stateLock)
         {
-            _isRunning = false;
-            _lastStoppedThreadId = threadId;
-            _lastStopReason = reason;
+            if (_locationResolved || _isRunning || !_attachedProcessId.HasValue || _lastStoppedThreadId is null)
+                return;
+
+            threadId = _lastStoppedThreadId.Value;
+            reason = _lastStopReason;
+        }
+
+        string? filePath = null;
+        var line = 0;
+
+        try
+        {
+            var top = _debugger?.GetStackTrace(threadId).FirstOrDefault();
+
+            if (top?.Source is not null)
+            {
+                filePath = top.Source;
+                line = top.Line;
+            }
+        }
+        catch (Exception ex)
+        {
+            // A stop with no readable stack is still a stop; report it without a location rather
+            // than failing the call that asked for the state
+            McpLogger.LogDebugSessionEvent(_sessionId, "Stopped",
+                $"Could not read the location on thread {threadId}: {ex.Message}");
+        }
+
+        lock (_stateLock)
+        {
+            // Resumed while we were asking - whatever we found describes a stop that is over
+            if (_isRunning || _lastStoppedThreadId != threadId)
+                return;
+
+            _locationResolved = true;
+
+            if (filePath is null)
+                return;
+
             _currentLocation = $"{filePath}:{line}";
 
             if (reason == "breakpoint")
@@ -299,9 +337,6 @@ public class DebugSession : IDisposable
                     FindIdByLocation(filePath, line) ?? 0, filePath, line, threadId);
             }
         }
-
-        McpLogger.LogDebugSessionEvent(_sessionId, "Stopped", $"Thread {threadId} at {filePath}:{line}: {reason}");
-        LogMessage($"Stopped on thread {threadId} at {filePath}:{line}: {reason}");
     }
 
     private void OnDebuggerContinued(int threadId)
@@ -338,24 +373,34 @@ public class DebugSession : IDisposable
         LogMessage($"Output{(isError ? " (stderr)" : string.Empty)}: {message}");
     }
 
-    private void OnDebuggerBreakpointChanged(BreakpointManager.BreakpointInfo breakpoint)
+    /// <summary>
+    /// A breakpoint bound, or failed to. The adapter identifies it by its own id, which is why every
+    /// re-send records the ids it came back with: matching on location cannot tell two breakpoints on
+    /// one line apart, and a function breakpoint has no location to match on at all.
+    /// </summary>
+    private void OnDebuggerBreakpointChanged(AppliedBreakpoint breakpoint)
     {
-        // A function breakpoint has no requested location to match on, so it is found by name
-        var describedAs = breakpoint.FunctionName ?? $"{breakpoint.FilePath}:{breakpoint.Line}";
+        string describedAs;
 
         lock (_stateLock)
         {
-            if (breakpoint.FunctionName != null)
+            var tracked = _breakpoints.Values.FirstOrDefault(b => b.AdapterId == breakpoint.Id);
+
+            if (tracked != null)
             {
-                var trackedFunction = FindByFunctionName(breakpoint.FunctionName);
-                if (trackedFunction != null)
-                    ApplyDebuggerState(trackedFunction, breakpoint);
+                ApplyDebuggerState(tracked, breakpoint);
+                describedAs = $"{tracked.FilePath}:{tracked.Line}";
             }
             else
             {
-                var tracked = FindByLocation(breakpoint.FilePath, breakpoint.Line);
-                if (tracked != null)
-                    ApplyDebuggerState(tracked, breakpoint);
+                var trackedFunction =
+                    _functionBreakpoints.Values.FirstOrDefault(b => b.AdapterId == breakpoint.Id);
+
+                if (trackedFunction == null)
+                    return;
+
+                ApplyDebuggerState(trackedFunction, breakpoint);
+                describedAs = trackedFunction.FunctionName;
             }
         }
 
@@ -373,7 +418,12 @@ public class DebugSession : IDisposable
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(DebugSession));
+        }
 
+        ResolveStopLocation();
+
+        lock (_stateLock)
+        {
             return new ExecutionState(
                 _attachedProcessId.HasValue && _isRunning,
                 _attachedProcessId.HasValue,
@@ -587,7 +637,7 @@ public class DebugSession : IDisposable
         return true;
     }
 
-    private bool RemoveFunctionBreakpoint(ManagedDebugger debugger, int breakpointId)
+    private bool RemoveFunctionBreakpoint(DapDebugger debugger, int breakpointId)
     {
         TrackedFunctionBreakpoint? removed;
 
@@ -659,7 +709,7 @@ public class DebugSession : IDisposable
     /// ManagedDebugger.SetBreakpoints replaces the file's entire set, so sending a single line
     /// would silently drop every other breakpoint in that file.
     /// </summary>
-    private void ReapplyFile(ManagedDebugger debugger, string filePath)
+    private void ReapplyFile(DapDebugger debugger, string filePath)
     {
         List<TrackedBreakpoint> forFile;
 
@@ -672,7 +722,7 @@ public class DebugSession : IDisposable
         }
 
         var requests = forFile
-            .Select(b => new SharpDbgBreakpointRequest(b.Line, b.Condition, b.HitCondition))
+            .Select(b => new SourceBreakpointRequest(b.Line, b.Condition, b.HitCondition))
             .ToArray();
 
         var applied = RetryWhileModulesLoad(() => debugger.SetBreakpoints(filePath, requests));
@@ -690,7 +740,7 @@ public class DebugSession : IDisposable
     /// ManagedDebugger.SetFunctionBreakpoints replaces all of them at once, so sending a single one
     /// would silently drop the rest.
     /// </summary>
-    private void ReapplyFunctionBreakpoints(ManagedDebugger debugger)
+    private void ReapplyFunctionBreakpoints(DapDebugger debugger)
     {
         List<TrackedFunctionBreakpoint> all;
 
@@ -700,7 +750,7 @@ public class DebugSession : IDisposable
         }
 
         var requests = all
-            .Select(b => new SharpDbgFunctionBreakpointRequest(b.FunctionName, b.Condition, b.HitCondition))
+            .Select(b => new FunctionBreakpointRequest(b.FunctionName, b.Condition, b.HitCondition))
             .ToArray();
 
         var applied = RetryWhileModulesLoad(() => debugger.SetFunctionBreakpoints(requests));
@@ -715,17 +765,17 @@ public class DebugSession : IDisposable
 
     /// <summary>
     /// Retries a breakpoint call that lost a race with module loading.
-    /// ManagedDebugger keeps its modules in a plain Dictionary that the module-load callback writes
-    /// to on the debugger's own thread, while binding enumerates it on ours, so a call made while
-    /// the debuggee is still loading assemblies can fail with "Collection was modified". Retrying is
-    /// safe because both SetBreakpoints and SetFunctionBreakpoints replace a whole set rather than
-    /// adding to one, so a call that half-finished leaves nothing behind to duplicate.
-    /// The exception type is the only signal available - the message is the framework's and is
-    /// localized - so the retries are kept few and short, and anything that survives them is
-    /// reported to the caller.
+    /// SharpDbg keeps its modules in a plain Dictionary that the module-load callback writes to on
+    /// the debugger's own thread, while binding enumerates it on ours, so a call made while the
+    /// debuggee is still loading assemblies can fail with "Collection was modified" - UPSTREAM.md
+    /// defect 4. Retrying is safe because both requests replace a whole set rather than adding to
+    /// one, so a call that half-finished leaves nothing behind to duplicate.
+    /// Over DAP every failure arrives as a ProtocolException, so there is no type to tell that race
+    /// apart from a real failure. Retrying them all is acceptable because these two requests are
+    /// idempotent; the retries stay few and short, and whatever survives them reaches the caller.
     /// </summary>
-    private static List<BreakpointManager.BreakpointInfo> RetryWhileModulesLoad(
-        Func<List<BreakpointManager.BreakpointInfo>> apply)
+    private static List<AppliedBreakpoint> RetryWhileModulesLoad(
+        Func<List<AppliedBreakpoint>> apply)
     {
         const int MaxAttempts = 5;
 
@@ -735,7 +785,7 @@ public class DebugSession : IDisposable
             {
                 return apply();
             }
-            catch (InvalidOperationException) when (attempt < MaxAttempts)
+            catch (Exception ex) when (attempt < MaxAttempts && ex is InvalidOperationException or ProtocolException)
             {
                 Thread.Sleep(PollInterval);
             }
@@ -808,26 +858,29 @@ public class DebugSession : IDisposable
             ?.Id;
     }
 
-    private static void ApplyDebuggerState(TrackedBreakpoint tracked, BreakpointManager.BreakpointInfo info)
+    private static void ApplyDebuggerState(TrackedBreakpoint tracked, AppliedBreakpoint info)
     {
+        tracked.AdapterId = info.Id;
         tracked.Verified = info.Verified;
         tracked.Message = info.Message;
-        tracked.ResolvedLine = info.ResolvedBreakpointFromPdb?.StartLine;
+        tracked.ResolvedLine = info.Line;
     }
 
-    private static void ApplyDebuggerState(
-        TrackedFunctionBreakpoint tracked,
-        BreakpointManager.BreakpointInfo info)
+    /// <summary>
+    /// A function breakpoint comes back over DAP with no location at all - upstream nulls Line and
+    /// Source for them, in both the response and the event - so BoundLocations can only be filled
+    /// from where it turns out to stop. Asked for upstream as MattParkerDev/sharpdbg#31.
+    /// </summary>
+    private static void ApplyDebuggerState(TrackedFunctionBreakpoint tracked, AppliedBreakpoint info)
     {
+        tracked.AdapterId = info.Id;
         tracked.Verified = info.Verified;
         tracked.Message = info.Message;
 
-        // One name can match several methods - overloads, or the same name in several modules -
-        // and each binding knows the source location it resolved to.
-        tracked.BoundLocations = info.FunctionBindings
-            .Select(b => new BoundLocation(b.Source.DocumentPath, b.Source.StartLine))
-            .Distinct()
-            .ToList();
+        if (info.SourcePath is not null && info.Line is not null)
+        {
+            tracked.BoundLocations = [new BoundLocation(info.SourcePath, info.Line.Value)];
+        }
     }
 
     /// <summary>
@@ -835,9 +888,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public List<StackFrameInfo> GetStackTrace(int threadId)
     {
-        return RequireDebugger().GetStackTrace(threadId)
-            .Select(f => new StackFrameInfo(f.Id, f.Name, f.Line, f.EndLine, f.Column, f.EndColumn, f.Source))
-            .ToList();
+        return RequireDebugger().GetStackTrace(threadId);
     }
 
     /// <summary>
@@ -846,7 +897,7 @@ public class DebugSession : IDisposable
     public List<ThreadInfo> GetThreads()
     {
         var threads = RequireDebugger().GetThreads();
-        return threads.Select(t => new ThreadInfo(t.id, t.name)).ToList();
+        return threads.Select(t => new ThreadInfo(t.Id, t.Name)).ToList();
     }
 
     /// <summary>
@@ -859,11 +910,7 @@ public class DebugSession : IDisposable
         var debugger = RequireDebugger();
 
         // Call async methods outside the lock to avoid deadlocks
-        var scopes = debugger.GetScopes(frameId);
-        if (scopes.Count == 0)
-            return [];
-
-        return Map(await debugger.GetVariables(scopes[0].VariablesReference));
+        return await Task.Run(() => debugger.GetFrameVariables(frameId));
     }
 
     /// <summary>
@@ -874,20 +921,8 @@ public class DebugSession : IDisposable
     {
         var debugger = RequireDebugger();
 
-        // Call async methods outside the lock to avoid deadlocks
-        return Map(await debugger.GetVariables(variablesReference));
-    }
-
-    /// <summary>
-    /// The debugger's own variable shape, translated to ours. Keeping our surface in our own types is
-    /// what lets the engine underneath change - see the backlog item on moving to the DAP adapter.
-    /// </summary>
-    private static List<VariableInfo> Map(
-        IEnumerable<SharpDbg.Infrastructure.Debugger.Models.Response.VariableInfo> variables)
-    {
-        return variables
-            .Select(v => new VariableInfo(v.Name, v.Value, v.Type, v.VariablesReference))
-            .ToList();
+        // Off the caller's thread: the request blocks until the adapter answers
+        return await Task.Run(() => debugger.GetVariables(variablesReference));
     }
 
     /// <summary>
@@ -906,7 +941,7 @@ public class DebugSession : IDisposable
         }
 
         McpLogger.LogDebugSessionEvent(_sessionId, "Continue", "Resuming execution");
-        Resume(debugger.HandleContinueRequest);
+        Resume(() => debugger.Continue(StoppedThreadOrFirst(debugger)));
         return true;
     }
 
@@ -944,7 +979,7 @@ public class DebugSession : IDisposable
         var debugger = RequireDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "Pause", "Breaking execution");
-        debugger.Pause();
+        debugger.Pause(StoppedThreadOrFirst(debugger));
 
         // Stop() is synchronous and raises no stop event of its own.
         lock (_stateLock)
@@ -963,7 +998,7 @@ public class DebugSession : IDisposable
 
         McpLogger.LogDebugSessionEvent(_sessionId, "StepOver", $"Thread {threadId}");
         BeginStep();
-        Resume(() => debugger.StepNext(threadId));
+        Resume(() => debugger.StepOver(threadId));
     }
 
     /// <summary>
@@ -997,9 +1032,7 @@ public class DebugSession : IDisposable
     {
         var debugger = RequireDebugger();
 
-        // Call async methods outside the lock to avoid deadlocks
-        var evaluated = await debugger.Evaluate(expression, frameId).WaitAsync(_evaluationTimeout);
-        return new EvaluationResult(evaluated.Value, evaluated.Type, evaluated.VariablesReference);
+        return await Task.Run(() => debugger.Evaluate(expression, frameId)).WaitAsync(_evaluationTimeout);
     }
 
     /// <summary>
@@ -1029,7 +1062,7 @@ public class DebugSession : IDisposable
 
     private void DetachCoreUnsynchronized()
     {
-        ManagedDebugger? debuggerToRelease;
+        DapDebugger? debuggerToRelease;
 
         lock (_stateLock)
         {
@@ -1043,7 +1076,6 @@ public class DebugSession : IDisposable
 
             // Unsubscribe from events
             debuggerToRelease.OnStopped -= OnDebuggerStopped;
-            debuggerToRelease.OnStopped2 -= OnDebuggerStoppedAtLocation;
             debuggerToRelease.OnContinued -= OnDebuggerContinued;
             debuggerToRelease.OnExited -= OnDebuggerExited;
             debuggerToRelease.OnOutput -= OnDebuggerOutput;
@@ -1062,6 +1094,7 @@ public class DebugSession : IDisposable
         try
         {
             debuggerToRelease.Disconnect(terminateDebuggee: false);
+            debuggerToRelease.Dispose();
         }
         catch (Exception ex)
         {
@@ -1072,7 +1105,7 @@ public class DebugSession : IDisposable
     /// <summary>
     /// Resolve the debugger for an operation that requires an attached process
     /// </summary>
-    private ManagedDebugger RequireDebugger()
+    private DapDebugger RequireDebugger()
     {
         lock (_stateLock)
         {
@@ -1132,6 +1165,22 @@ public class DebugSession : IDisposable
         if (!TryBeginResume())
             throw new InvalidOperationException(
                 "Process is running. It must be stopped at a breakpoint before stepping.");
+    }
+
+    /// <summary>
+    /// DAP's continue, pause and step all take a thread. The one the debuggee last stopped on is the
+    /// right answer whenever there is one; otherwise any thread will do, since SharpDbg stops and
+    /// resumes the whole process regardless of which thread is named.
+    /// </summary>
+    private int StoppedThreadOrFirst(DapDebugger debugger)
+    {
+        lock (_stateLock)
+        {
+            if (_lastStoppedThreadId is { } stopped)
+                return stopped;
+        }
+
+        return debugger.GetThreads().FirstOrDefault().Id;
     }
 
     private void ClearStopState()
@@ -1228,6 +1277,9 @@ internal sealed class TrackedBreakpoint(int id, string filePath, int line)
 
     public string FilePath { get; } = filePath;
 
+    /// <summary>The adapter's own id for this breakpoint, refreshed on every re-send</summary>
+    public int AdapterId { get; set; }
+
     /// <summary>Line the caller asked for</summary>
     public int Line { get; } = line;
 
@@ -1252,6 +1304,9 @@ internal sealed class TrackedFunctionBreakpoint(int id, string functionName)
 
     /// <summary>Name pattern the caller asked for, e.g. "Program.Work" or "Work(int)"</summary>
     public string FunctionName { get; } = functionName;
+
+    /// <summary>The adapter's own id for this breakpoint, refreshed on every re-send</summary>
+    public int AdapterId { get; set; }
 
     /// <summary>Where the name actually bound, one entry per matching method</summary>
     public IReadOnlyList<BoundLocation> BoundLocations { get; set; } = [];
