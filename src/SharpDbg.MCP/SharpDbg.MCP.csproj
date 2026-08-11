@@ -12,11 +12,20 @@
     <!-- Debugging Infrastructure. SharpDbgSourcePath swaps the package for a source clone,
          see Directory.Build.props -->
     <PackageReference Include="SharpDbg" Condition="'$(UseLocalSharpDbg)' != 'true'" />
+    <!-- All three, because SharpDbg.InMemory marks its own project references PrivateAssets="all",
+         so referencing it alone brings neither the adapter nor the debugger -->
+    <ProjectReference Include="$(SharpDbgSourcePath)\src\SharpDbg.InMemory\SharpDbg.InMemory.csproj"
+                      Condition="'$(UseLocalSharpDbg)' == 'true'" />
+    <ProjectReference Include="$(SharpDbgSourcePath)\src\SharpDbg.Application\SharpDbg.Application.csproj"
+                      Condition="'$(UseLocalSharpDbg)' == 'true'" />
     <ProjectReference Include="$(SharpDbgSourcePath)\src\SharpDbg.Infrastructure\SharpDbg.Infrastructure.csproj"
                       Condition="'$(UseLocalSharpDbg)' == 'true'" />
-    <!-- Only the SharpDbg packaging project declares the native shim, so a source reference has to
-         bring it along or every attach fails inside ClrDebugExtensions -->
+    <!-- Only the SharpDbg packaging project declares these, so a source reference has to bring them
+         along: without the native shim every attach fails inside ClrDebugExtensions, and the protocol
+         types are what the adapter is spoken to with -->
     <PackageReference Include="Microsoft.Diagnostics.DbgShim" Condition="'$(UseLocalSharpDbg)' == 'true'" />
+    <PackageReference Include="Microsoft.VisualStudio.Shared.VSCodeDebugProtocol"
+                      Condition="'$(UseLocalSharpDbg)' == 'true'" />
 
     <!-- Markdown parsing for Phase 1 -->
     <PackageReference Include="Markdig" />

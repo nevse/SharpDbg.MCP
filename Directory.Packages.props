@@ -13,6 +13,7 @@
     <PackageVersion Include="SharpDbg" Version="0.1.9" />
     <!-- Native shim, only pulled in when building against a SharpDbg source clone -->
     <PackageVersion Include="Microsoft.Diagnostics.DbgShim" Version="9.0.661903" />
+    <PackageVersion Include="Microsoft.VisualStudio.Shared.VSCodeDebugProtocol" Version="18.0.10427.1" />
 
     <!-- Markdown Processing -->
     <PackageVersion Include="Markdig" Version="0.44.0" />
