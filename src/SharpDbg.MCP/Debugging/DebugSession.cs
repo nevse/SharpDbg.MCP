@@ -767,8 +767,8 @@ public class DebugSession : IDisposable
     /// Retries a breakpoint call that lost a race with module loading.
     /// SharpDbg keeps its modules in a plain Dictionary that the module-load callback writes to on
     /// the debugger's own thread, while binding enumerates it on ours, so a call made while the
-    /// debuggee is still loading assemblies can fail with "Collection was modified" - UPSTREAM.md
-    /// defect 4. Retrying is safe because both requests replace a whole set rather than adding to
+    /// debuggee is still loading assemblies can fail with "Collection was modified" on older
+    /// versions. Retrying is safe because both requests replace a whole set rather than adding to
     /// one, so a call that half-finished leaves nothing behind to duplicate.
     /// Over DAP every failure arrives as a ProtocolException, so there is no type to tell that race
     /// apart from a real failure. Retrying them all is acceptable because these two requests are

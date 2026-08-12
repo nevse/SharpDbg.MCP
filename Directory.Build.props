@@ -11,7 +11,7 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
 
     <!-- Build against a clone of https://github.com/MattParkerDev/sharpdbg instead of the package,
-         for diagnosing upstream defects (docs/UPSTREAM.md). Set the path to the clone as an
+         for diagnosing upstream defects. Set the path to the clone as an
          environment variable or on the command line:
            dotnet build -p:SharpDbgSourcePath=/path/to/sharpdbg
          Unset, everything builds against the SharpDbg version in Directory.Packages.props. -->

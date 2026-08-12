@@ -125,8 +125,8 @@ Maximum number of concurrent debug sessions (1) reached.
 Close one with close_session, or raise SHARPDBG_MAX_SESSIONS.
 ```
 
-The default of one is deliberate: every attach carries a risk of the shim crash in
-[docs/UPSTREAM.md](docs/UPSTREAM.md) defect 8, so more sessions means more exposure. Two concurrent
+The default of one is deliberate: every attach carries a risk of a native crash inside the debugging
+shim, so more sessions means more exposure. Two concurrent
 sessions are verified to stay isolated — resuming one leaves the other where it was — by
 `TwoSessions_DebugTwoProcessesIndependently`.
 
@@ -200,9 +200,8 @@ attempts in two minutes, with the debuggee suspended throughout and a zero-byte
 A `continue_execution` in that state fails rather than resuming, and the error explains that
 detaching is the way out.
 
-The details are in [docs/UPSTREAM.md](docs/UPSTREAM.md) defect 6, along with what changes here once it
-is fixed upstream. Until then, stopping in code without symbols reports no location at all — which is
-a limitation, not a hang.
+This is a limitation of the debugger underneath, not a hang: until it can decompile, stopping in code
+without symbols reports no location at all.
 
 ### Examples
 
@@ -517,9 +516,6 @@ that is fixed in 0.1.9, which this server requires.
 - **No source location in code without symbols** - a stop in a module with no PDB reports no file or
   line, because the decompilation that would supply one cannot run
 - **Watch Expressions** - Continuous monitoring of expression values
-
-The evidence for each of these, and how to tell when one is fixed, is in
-[docs/UPSTREAM.md](docs/UPSTREAM.md).
 
 **Not Implemented Yet:**
 - Hot reload support (modify code while debugging)

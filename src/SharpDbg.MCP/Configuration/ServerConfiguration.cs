@@ -17,7 +17,7 @@ public class ServerConfiguration
     /// Maximum number of debug sessions open at once (default: 1). Raising it lets one server debug
     /// several processes at the same time, each with its own breakpoints and its own stops, selected
     /// by session_id. The default of one keeps that off unless it is asked for: every attach carries
-    /// the risk of the shim crash in docs/UPSTREAM.md defect 8, and more sessions means more attaches.
+    /// the risk of a native crash inside the debugging shim, and more sessions means more attaches.
     /// Environment variable: SHARPDBG_MAX_SESSIONS
     /// </summary>
     public int MaxConcurrentSessions { get; set; } = 1;
@@ -61,7 +61,7 @@ public class ServerConfiguration
     /// Restrict debugging to user code, skipping framework and third-party assemblies (default: true).
     /// Leave this on. Turning it off lets a step reach code that has no symbols, at which point the
     /// debugger tries to decompile that module to find a location - and every route through that
-    /// fails in SharpDbg 0.1.7 (see docs/UPSTREAM.md defect 6). The failure is swallowed, so the step
+    /// fails in SharpDbg 0.1.7. The failure is swallowed, so the step
     /// never completes and the debuggee stays suspended until the session is detached.
     /// Environment variable: SHARPDBG_JUST_MY_CODE
     /// </summary>

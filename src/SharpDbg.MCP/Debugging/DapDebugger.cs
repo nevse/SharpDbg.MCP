@@ -13,7 +13,7 @@ namespace SharpDbg.MCP.Debugging;
 /// Drives SharpDbg through the surface its package actually supports: an in-process debug adapter
 /// spoken to over DAP. The alternative - calling <c>ManagedDebugger</c> directly - is public but
 /// unsupported, and misses every piece of synchronisation SharpDbg has, all of which lives in its
-/// DebugAdapter. See docs/UPSTREAM.md defect 9 for what that cost us.
+/// DebugAdapter.
 /// Requests are never sent from an event handler: events are delivered on the protocol's reader
 /// thread, which is also what would have to read the response.
 /// </summary>

@@ -230,7 +230,7 @@ public sealed class DebugSessionIntegrationTests
 
         // The rest is done while the debuggee is stopped. Adding or removing a breakpoint re-sends the
         // file's whole set, and doing that while a hit on one of them is in flight trips an upstream
-        // defect that leaves the process suspended with nothing reported - see UPSTREAM.md defect 5.
+        // defect that leaves the process suspended with nothing reported.
         // This test is about removal leaving the others armed, so it stays out of that race.
         WaitForStop(session);
 
@@ -252,7 +252,7 @@ public sealed class DebugSessionIntegrationTests
             // the upstream defect above rather than anything this test can assert on. Saying so beats
             // a red run for someone else's race, and beats pretending the run proved something.
             if (debuggee.CountOutputDuring(ObservationWindow) == 0)
-                Assert.Inconclusive("The debuggee is suspended with no stop reported: UPSTREAM.md defect 5");
+                Assert.Inconclusive("The debuggee is suspended with no stop reported - a known debugger defect");
 
             Assert.Fail("The surviving breakpoint never fired, and the debuggee is running");
         }
@@ -389,7 +389,7 @@ public sealed class DebugSessionIntegrationTests
     /// It did not until 0.1.9, which is the whole of sharpdbg#24: expanding a member whose value has
     /// to be evaluated - a record's EqualityContract, which is a RuntimeType - first poisoned the
     /// session with a disposed handle, and then, once that was fixed, still left the process
-    /// suspended while reporting that it had resumed. Both are what UPSTREAM.md defects 1 and 2 were.
+    /// suspended while reporting that it had resumed.
     /// This checks the debuggee by watching its output rather than by asking the debugger, because
     /// what went wrong before was precisely that the debugger's answer was wrong.
     /// </summary>
@@ -422,13 +422,13 @@ public sealed class DebugSessionIntegrationTests
         Assert.IsGreaterThan(
             0,
             debuggee.CountOutputDuring(ObservationWindow),
-            "The debuggee did not resume on the first continue - see UPSTREAM.md defect 2");
+            "The debuggee did not resume on the first continue");
     }
 
     /// <summary>
     /// An evaluated object must come back with a reference that expand_variable accepts, which is
     /// what makes evaluate_expression useful for anything but printing. Upstream hardcoded it to 0
-    /// until 0.1.9 - UPSTREAM.md defect 3.
+    /// until 0.1.9.
     /// </summary>
     [TestMethod]
     public async Task EvaluateExpression_ObjectResult_YieldsAnExpandableReference()
