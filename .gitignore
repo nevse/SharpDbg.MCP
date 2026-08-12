@@ -482,3 +482,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Working notes on upstream defects - kept local, not published
+docs/UPSTREAM.md
