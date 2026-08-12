@@ -28,12 +28,13 @@ internal sealed class DapDebugger : IDisposable
     private bool _disposed;
 
     /// <summary>
-    /// Thread id and reason. A DAP stop carries no source location - SharpDbg does attach one as an
-    /// additional property, but <c>ProtocolObject.AdditionalProperties</c> is not public, so the
-    /// location is read from the top stack frame instead, by whoever needs it. It must not be read
-    /// here: this runs on the protocol's reader thread, which is also what reads request responses.
+    /// Thread id, reason, and the adapter ids of the breakpoints the stop is attributed to. A DAP stop
+    /// carries no source location - SharpDbg does attach one as an additional property, but
+    /// <c>ProtocolObject.AdditionalProperties</c> is not public, so the location is read from the top
+    /// stack frame instead, by whoever needs it. It must not be read here: this runs on the protocol's
+    /// reader thread, which is also what reads request responses.
     /// </summary>
-    public event Action<int, string>? OnStopped;
+    public event Action<int, string, IReadOnlyList<int>?>? OnStopped;
 
     public event Action<int>? OnContinued;
     public event Action? OnExited;
@@ -204,7 +205,7 @@ internal sealed class DapDebugger : IDisposable
     }
 
     private void OnStoppedEvent(StoppedEvent stopped) =>
-        OnStopped?.Invoke(stopped.ThreadId ?? 0, ReasonToString(stopped.Reason));
+        OnStopped?.Invoke(stopped.ThreadId ?? 0, ReasonToString(stopped.Reason), stopped.HitBreakpointIds);
 
     private void OnOutputEvent(OutputEvent output)
     {

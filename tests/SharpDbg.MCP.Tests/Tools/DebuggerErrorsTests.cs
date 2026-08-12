@@ -61,23 +61,6 @@ public class DebuggerErrorsTests
         Assert.Contains("detach_from_process", explanation);
     }
 
-    /// <summary>
-    /// SharpDbg 0.1.9 reports a resume that did not take as a plain InvalidOperationException whose
-    /// own text asks the caller to raise an issue upstream. An MCP client cannot act on that, so the
-    /// explanation has to say what actually gets it out of the state.
-    /// </summary>
-    [TestMethod]
-    public void Explain_ResumeThatDidNotTake_SaysHowToRecover()
-    {
-        var explanation = DebuggerErrors.Explain(new InvalidOperationException(
-            "DAP called Continue, but process is still stopped. Must be queued callbacks, " +
-            "please raise an issue on SharpDbg."));
-
-        Assert.IsNotNull(explanation);
-        Assert.Contains("detach_from_process", explanation);
-        Assert.Contains("just_my_code", explanation);
-    }
-
     [TestMethod]
     public void Explain_UnrelatedFailure_ReturnsNull()
     {

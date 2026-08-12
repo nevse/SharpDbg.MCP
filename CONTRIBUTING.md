@@ -136,8 +136,8 @@ public void Attach(int processId)
         if (_attached)
             throw new InvalidOperationException("Already attached to a process");
 
-        _debugger = new ManagedDebugger(LogMessage);
-        _debugger.Attach(processId);
+        _debugger = new DapDebugger(LogMessage);
+        _debugger.Attach(processId, justMyCode, timeout);
         _attached = true;
     }
 }

@@ -59,10 +59,9 @@ public class ServerConfiguration
 
     /// <summary>
     /// Restrict debugging to user code, skipping framework and third-party assemblies (default: true).
-    /// Leave this on. Turning it off lets a step reach code that has no symbols, at which point the
-    /// debugger tries to decompile that module to find a location - and every route through that
-    /// fails in SharpDbg 0.1.7. The failure is swallowed, so the step
-    /// never completes and the debuggee stays suspended until the session is detached.
+    /// Turning it off lets a step reach code that has no symbols, which the debugger then decompiles
+    /// to find a location. That works, but the first module costs seconds - over 20 for
+    /// System.Private.CoreLib - with the debuggee suspended throughout, before the result is cached.
     /// Environment variable: SHARPDBG_JUST_MY_CODE
     /// </summary>
     public bool JustMyCode { get; set; } = true;

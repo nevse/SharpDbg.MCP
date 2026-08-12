@@ -612,10 +612,8 @@ public sealed class DebugSessionIntegrationTests
 
         Assert.IsTrue(breakpoint.Verified, $"Function breakpoint was not verified: {breakpoint.Message}");
 
-        // Pins MattParkerDev/sharpdbg#31: over DAP a function breakpoint comes back with no location
-        // at all, so there is nothing to report as a bound location and nothing to match a hit
-        // against. When this starts failing, upstream has added them - restore the assertions that
-        // the breakpoint says where it bound and that the hit carries the caller's id.
+        // A function breakpoint still comes back with no location - a name can bind to several methods
+        // and the protocol has room for one, so upstream declined to guess. See MattParkerDev/sharpdbg#31.
         Assert.IsEmpty(breakpoint.BoundLocations);
 
         var state = WaitForStop(session);
@@ -623,9 +621,10 @@ public sealed class DebugSessionIntegrationTests
         Assert.AreEqual("breakpoint", state.StopReason);
         Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee kept running while reported stopped");
         Assert.IsNotNull(state.LastBreakpoint);
-        Assert.AreEqual(TestPaths.TestAppSource, state.LastBreakpoint.FilePath,
-            "The stop must still say where it happened, even when it cannot say which breakpoint it was");
-        Assert.AreEqual(0, state.LastBreakpoint.BreakpointId, "See sharpdbg#31");
+        Assert.AreEqual(TestPaths.TestAppSource, state.LastBreakpoint.FilePath);
+        Assert.AreEqual(breakpoint.Id, state.LastBreakpoint.BreakpointId,
+            "The hit must carry the id the caller was given, which only the debugger can say for a "
+            + "function breakpoint - it binds to places nobody asked for");
     }
 
     [TestMethod]

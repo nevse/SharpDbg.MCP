@@ -46,6 +46,8 @@ public class DebugSession : IDisposable
     private bool _locationResolved = true;
     private string? _lastStopReason;
     private int? _lastStoppedThreadId;
+    // Adapter ids the debugger attributes the current stop to, matched against TrackedBreakpoint.AdapterId
+    private IReadOnlyList<int>? _lastHitAdapterIds;
     private BreakpointHitInfo? _lastBreakpoint;
     private ExceptionBreakMode _exceptionBreakMode = ExceptionBreakMode.Always;
     private int _exceptionsSeen;
@@ -189,7 +191,7 @@ public class DebugSession : IDisposable
         }
     }
 
-    private void OnDebuggerStopped(int threadId, string reason)
+    private void OnDebuggerStopped(int threadId, string reason, IReadOnlyList<int>? hitBreakpointIds)
     {
         bool ignoring;
 
@@ -213,6 +215,7 @@ public class DebugSession : IDisposable
                 _isRunning = false;
                 _lastStoppedThreadId = threadId;
                 _lastStopReason = reason;
+                _lastHitAdapterIds = hitBreakpointIds;
 
                 // A DAP stop carries no location, and this is the protocol's reader thread, which is
                 // also what reads request responses - asking for the stack here would deadlock. The
@@ -334,7 +337,8 @@ public class DebugSession : IDisposable
                 // The stop reports the line the PDB resolved to, which is not necessarily the
                 // line that was requested, and for a function breakpoint was never requested.
                 _lastBreakpoint = new BreakpointHitInfo(
-                    FindIdByLocation(filePath, line) ?? 0, filePath, line, threadId);
+                    FindIdByAdapterIds(_lastHitAdapterIds) ?? FindIdByLocation(filePath, line) ?? 0,
+                    filePath, line, threadId);
             }
         }
     }
@@ -856,6 +860,33 @@ public class DebugSession : IDisposable
             .FirstOrDefault(b => b.BoundLocations.Any(
                 l => PathComparer.Equals(l.FilePath, filePath) && l.Line == line))
             ?.Id;
+    }
+
+    /// <summary>
+    /// The id of whichever breakpoint the debugger says the stop belongs to. This is the only way to
+    /// attribute a function breakpoint hit: it binds to places nobody asked for, so matching by
+    /// location cannot find it. Empty until SharpDbg 0.1.12, which is why the location match stays as
+    /// a fallback.
+    /// </summary>
+    private int? FindIdByAdapterIds(IReadOnlyList<int>? adapterIds)
+    {
+        if (adapterIds is null || adapterIds.Count == 0)
+            return null;
+
+        foreach (var adapterId in adapterIds)
+        {
+            var tracked = _breakpoints.Values.FirstOrDefault(b => b.AdapterId == adapterId);
+
+            if (tracked != null)
+                return tracked.Id;
+
+            var trackedFunction = _functionBreakpoints.Values.FirstOrDefault(b => b.AdapterId == adapterId);
+
+            if (trackedFunction != null)
+                return trackedFunction.Id;
+        }
+
+        return null;
     }
 
     private static void ApplyDebuggerState(TrackedBreakpoint tracked, AppliedBreakpoint info)

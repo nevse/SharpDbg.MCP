@@ -184,24 +184,18 @@ The server can be configured using environment variables. Add them to your Claud
 
 ### Do not turn off Just My Code
 
-`SHARPDBG_JUST_MY_CODE=false` currently freezes the debuggee, and it is worth knowing why before
-reaching for it.
+`SHARPDBG_JUST_MY_CODE=false` works, but the first step out of your own code is slow.
 
 With Just My Code on, a step keeps going until it reaches code you have symbols for, so it never
 surfaces outside your own code. With it off, a step can stop in a module that has no symbols — the
-framework, or any assembly shipped without a PDB — and the debugger then tries to decompile that
-module to work out where it stopped. That decompilation cannot succeed in SharpDbg
-0.1.9: `System.Private.CoreLib`, which is where a step out of user code lands first, takes 12–21
-seconds to decompile and then fails with a `NullReferenceException` inside the debugger. The failure
-is caught and logged, the step is retried, and it fails the same way every time — measured at 10
-attempts in two minutes, with the debuggee suspended throughout and a zero-byte
-`.decompiled.pdb` left in the symbol cache. Only `detach_from_process` releases it.
+framework, or any assembly shipped without a PDB — and the debugger decompiles that module to work
+out where it stopped. It reports the stop against the decompiled source, so the location looks like
+`decompiled/System.Private.CoreLib/.../DefaultInterpolatedStringHandler.cs:28`.
 
-A `continue_execution` in that state fails rather than resuming, and the error explains that
-detaching is the way out.
-
-This is a limitation of the debugger underneath, not a hang: until it can decompile, stopping in code
-without symbols reports no location at all.
+The first time costs real seconds: `System.Private.CoreLib`, which is where a step out of user code
+lands first, took over 20 to decompile here, with the debuggee suspended throughout. The result is
+cached on disk, and the same step afterwards is immediate. If a step seems to hang, give it a minute
+before concluding anything.
 
 ### Examples
 
@@ -504,7 +498,7 @@ object, the reference is non-zero and can be walked with `expand_variable`.
 
 Expressions that run code in the target — a property getter, `ToString()`, any method call — are
 allowed. Up to SharpDbg 0.1.8 these left the debuggee suspended while reporting that it had resumed;
-that is fixed in 0.1.9, which this server requires.
+that is fixed in 0.1.9, and this server builds against 0.1.12.
 
 ### Limitations & Planned Features
 
@@ -513,8 +507,6 @@ that is fixed in 0.1.9, which this server requires.
   exception, so exception breaks can only be all or nothing (`set_exception_break_mode`)
 - **Filtering exception breaks by type** - reading the exception's type is possible but the stop
   itself carries no type, so there is nothing to filter on before stopping
-- **No source location in code without symbols** - a stop in a module with no PDB reports no file or
-  line, because the decompilation that would supply one cannot run
 - **Watch Expressions** - Continuous monitoring of expression values
 
 **Not Implemented Yet:**
@@ -626,7 +618,8 @@ SharpDbg.MCP/
 │       │   ├── ConceptIndex.cs         # Concept categorization
 │       │   └── FlowDiagramProvider.cs  # Debugging flow extraction
 │       ├── Debugging/
-│       │   ├── DebugSession.cs         # Wraps ManagedDebugger
+│       │   ├── DapDebugger.cs          # Speaks DAP to SharpDbg's in-memory adapter
+│       │   ├── DebugSession.cs         # One debugging session, built on DapDebugger
 │       │   ├── DebugSessionManager.cs  # Multi-session management
 │       │   └── ProcessDiscovery.cs     # .NET process detection
 │       ├── Logging/
