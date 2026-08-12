@@ -34,7 +34,7 @@ public class DebugSessionManager : IDisposable
     }
 
     /// <summary>
-    /// Caller already holds the lock. Kept separate so Resolve and AcquireForAttach can create a
+    /// Caller already holds the lock. Kept separate so Resolve and AcquireForDebuggee can create a
     /// session without releasing and retaking it, which would let two callers past the limit.
     /// </summary>
     private DebugSession CreateSessionCore()
@@ -136,10 +136,10 @@ public class DebugSessionManager : IDisposable
     }
 
     /// <summary>
-    /// A session to attach a process to: an open one that is not attached to anything, or a new one.
-    /// This is what makes a second attach open a second session rather than fail.
+    /// A session to put a debuggee in, whether attached to or launched: an open one that has none,
+    /// or a new one. This is what makes a second attach open a second session rather than fail.
     /// </summary>
-    public DebugSession AcquireForAttach(int? sessionId)
+    public DebugSession AcquireForDebuggee(int? sessionId)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(DebugSessionManager));

@@ -39,6 +39,48 @@ public static class InputValidation
     }
 
     /// <summary>
+    /// Validates the program to launch and returns it as an absolute path. A path that does not
+    /// exist fails deep inside the debugger with "Process start failed", and a project file is the
+    /// mistake worth naming: what runs is build output, not a project.
+    /// </summary>
+    public static string ValidateProgramPath(string programPath)
+    {
+        if (string.IsNullOrWhiteSpace(programPath))
+            throw new ArgumentException("Program path cannot be empty", nameof(programPath));
+
+        if (Path.GetExtension(programPath) is ".csproj" or ".fsproj" or ".vbproj" or ".sln" or ".slnx")
+            throw new ArgumentException(
+                $"{programPath} is a project, not a program. Build it and pass the .dll or the " +
+                "executable next to it, usually under bin/Debug/<framework>.",
+                nameof(programPath));
+
+        var fullPath = Path.GetFullPath(programPath);
+
+        if (!File.Exists(fullPath))
+            throw new ArgumentException($"There is no file at {fullPath}", nameof(programPath));
+
+        return fullPath;
+    }
+
+    public static void ValidateWorkingDirectory(string? workingDirectory)
+    {
+        if (workingDirectory is null)
+            return;
+
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+            throw new ArgumentException("Working directory cannot be blank", nameof(workingDirectory));
+
+        if (!Directory.Exists(workingDirectory))
+            throw new ArgumentException($"There is no directory at {workingDirectory}", nameof(workingDirectory));
+    }
+
+    public static void ValidateOutputLineCount(int maxLines)
+    {
+        if (maxLines <= 0)
+            throw new ArgumentException($"max_lines must be positive, got: {maxLines}", nameof(maxLines));
+    }
+
+    /// <summary>
     /// Validates a function breakpoint name. Only emptiness is checked here: the pattern grammar is
     /// the debugger's, and it reports a bad pattern as an unverified breakpoint with the reason,
     /// which is more useful than a second opinion from here.

@@ -271,4 +271,77 @@ public class InputValidationTests
         }
         catch (ArgumentException) { }
     }
+
+    [TestMethod]
+    public void ValidateProgramPath_ExistingFile_ReturnsAnAbsolutePath()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"launch-{Guid.NewGuid():N}.dll");
+        File.WriteAllText(file, string.Empty);
+
+        try
+        {
+            var validated = InputValidation.ValidateProgramPath(file);
+
+            Assert.IsTrue(Path.IsPathRooted(validated));
+            Assert.IsTrue(File.Exists(validated));
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [TestMethod]
+    public void ValidateProgramPath_MissingFile_SaysWhereItLooked()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"absent-{Guid.NewGuid():N}.dll");
+
+        var error = Assert.Throws<ArgumentException>(() => InputValidation.ValidateProgramPath(missing));
+
+        StringAssert.Contains(error.Message, missing);
+    }
+
+    /// <summary>
+    /// Handing over a project rather than its build output is the mistake worth naming: the debugger
+    /// would try to run the .csproj and fail with something that explains nothing.
+    /// </summary>
+    [TestMethod]
+    public void ValidateProgramPath_ProjectFile_SaysToBuildItFirst()
+    {
+        var error = Assert.Throws<ArgumentException>(
+            () => InputValidation.ValidateProgramPath("/somewhere/MyApp.csproj"));
+
+        StringAssert.Contains(error.Message, "Build it");
+    }
+
+    [TestMethod]
+    public void ValidateProgramPath_Empty_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentException>(() => InputValidation.ValidateProgramPath(""));
+        Assert.Throws<ArgumentException>(() => InputValidation.ValidateProgramPath("   "));
+    }
+
+    [TestMethod]
+    public void ValidateWorkingDirectory_NullMeansTheProgramsOwnDirectory()
+    {
+        InputValidation.ValidateWorkingDirectory(null);
+    }
+
+    [TestMethod]
+    public void ValidateWorkingDirectory_MissingDirectory_ThrowsArgumentException()
+    {
+        InputValidation.ValidateWorkingDirectory(Path.GetTempPath());
+
+        Assert.Throws<ArgumentException>(
+            () => InputValidation.ValidateWorkingDirectory(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
+    }
+
+    [TestMethod]
+    public void ValidateOutputLineCount_MustBePositive()
+    {
+        InputValidation.ValidateOutputLineCount(1);
+
+        Assert.Throws<ArgumentException>(() => InputValidation.ValidateOutputLineCount(0));
+        Assert.Throws<ArgumentException>(() => InputValidation.ValidateOutputLineCount(-1));
+    }
 }

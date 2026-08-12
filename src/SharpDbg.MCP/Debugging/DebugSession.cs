@@ -11,6 +11,18 @@ namespace SharpDbg.MCP.Debugging;
 public class DebugSession : IDisposable
 {
     /// <summary>
+    /// A launched program exists for the debugger before it exists as a process: everything that
+    /// needs threads, frames or a resume has to wait for Start, while breakpoints must not.
+    /// </summary>
+    private enum SessionPhase
+    {
+        Idle,
+        Prepared,
+        Live
+    }
+
+
+    /// <summary>
     /// The reason ManagedDebugger reports for a first-chance exception stop
     /// </summary>
     private const string ExceptionStopReason = "exception";
@@ -36,8 +48,14 @@ public class DebugSession : IDisposable
     // those, and SetBreakpoints only the file's. Ids are still handed out from one counter, so a
     // caller can pass any id to RemoveBreakpoint without tracking which kind it was.
     private readonly Dictionary<int, TrackedFunctionBreakpoint> _functionBreakpoints = new();
+    // The debuggee's own output, which only a launched process produces: SharpDbg redirects the
+    // streams of what it starts, so without keeping it here nobody would ever see it
+    private readonly Queue<OutputLine> _output = new();
+    private const int MaxBufferedOutputLines = 1000;
     private int _nextBreakpointId = 1;
     private DapDebugger? _debugger;
+    private SessionPhase _phase = SessionPhase.Idle;
+    private string? _launchedProgram;
     private int? _attachedProcessId;
     private bool _disposed;
     private bool _isRunning;
@@ -83,7 +101,7 @@ public class DebugSession : IDisposable
                 resumeNow = value == ExceptionBreakMode.Never
                     && !_isRunning
                     && _lastStopReason == ExceptionStopReason
-                    && _attachedProcessId.HasValue;
+                    && _phase == SessionPhase.Live;
 
                 threadId = _lastStoppedThreadId ?? 0;
 
@@ -104,17 +122,25 @@ public class DebugSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether this session has a debuggee of its own, which includes a launched program that has
+    /// not been started yet. The session manager reads it to find a session that is free.
+    /// </summary>
     public bool IsAttached
     {
         get
         {
             lock (_stateLock)
             {
-                return _attachedProcessId.HasValue;
+                return _phase != SessionPhase.Idle;
             }
         }
     }
 
+    /// <summary>
+    /// The process being debugged, or null for a launched one: SharpDbg sends no process event, so
+    /// the pid of what it started is never reported to us. See defect 14 in the upstream notes.
+    /// </summary>
     public int? AttachedProcessId
     {
         get
@@ -122,6 +148,20 @@ public class DebugSession : IDisposable
             lock (_stateLock)
             {
                 return _attachedProcessId;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The program this session launched, or null when it attached to an existing process
+    /// </summary>
+    public string? LaunchedProgram
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _launchedProgram;
             }
         }
     }
@@ -146,29 +186,11 @@ public class DebugSession : IDisposable
 
         lock (_stateLock)
         {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(DebugSession));
+            debugger = TakeOverSession($"Process ID: {processId}", "Attaching");
 
-            if (_attachedProcessId.HasValue)
-                throw new InvalidOperationException("Already attached to a process");
-
-            McpLogger.LogDebugSessionEvent(_sessionId, "Attaching", $"Process ID: {processId}");
-
-            debugger = new DapDebugger(LogMessage);
-
-            debugger.OnStopped += OnDebuggerStopped;
-            debugger.OnContinued += OnDebuggerContinued;
-            debugger.OnExited += OnDebuggerExited;
-            debugger.OnOutput += OnDebuggerOutput;
-            debugger.OnBreakpointChanged += OnDebuggerBreakpointChanged;
-
-            _debugger = debugger;
             _attachedProcessId = processId;
-            _lastBreakpoint = null;
+            _phase = SessionPhase.Live;
             _isRunning = true;
-            _exceptionsSeen = 0;
-            _exceptionsIgnored = 0;
-            ClearStopState();
         }
 
         try
@@ -191,6 +213,125 @@ public class DebugSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// Prepare a program for debugging without running it. Breakpoints set afterwards are in place
+    /// before the first line executes, which is what makes startup debuggable; Start runs it.
+    /// </summary>
+    public async Task Launch(
+        string program,
+        IReadOnlyList<string>? arguments = null,
+        string? workingDirectory = null,
+        IReadOnlyDictionary<string, string>? environment = null)
+    {
+        DapDebugger debugger;
+
+        lock (_stateLock)
+        {
+            debugger = TakeOverSession(program, "Launching");
+
+            _launchedProgram = program;
+            _phase = SessionPhase.Prepared;
+            _isRunning = false;
+        }
+
+        try
+        {
+            await debugger.Launch(
+                program,
+                arguments ?? [],
+                workingDirectory ?? Path.GetDirectoryName(program) ?? Environment.CurrentDirectory,
+                environment ?? new Dictionary<string, string>(),
+                _justMyCode,
+                _operationTimeout);
+
+            McpLogger.LogDebugSessionEvent(_sessionId, "Launched", $"{program}, not started yet");
+        }
+        catch (Exception ex)
+        {
+            McpLogger.LogDebugSessionError(_sessionId, "Launch", ex);
+            DetachCore();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Start the program prepared by Launch. The debuggee can hit a breakpoint before this returns,
+    /// so the session is marked running first and a stop that arrives meanwhile wins.
+    /// </summary>
+    public void Start()
+    {
+        DapDebugger debugger;
+
+        lock (_stateLock)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(DebugSession));
+
+            if (_phase != SessionPhase.Prepared)
+                throw new InvalidOperationException(_phase == SessionPhase.Live
+                    ? "The program is already running"
+                    : "Nothing has been launched in this session");
+
+            debugger = _debugger ?? throw new InvalidOperationException("Debugger not initialized");
+
+            _phase = SessionPhase.Live;
+            _isRunning = true;
+        }
+
+        try
+        {
+            debugger.Start();
+            McpLogger.LogDebugSessionEvent(_sessionId, "Started", _launchedProgram ?? string.Empty);
+        }
+        catch (Exception ex)
+        {
+            McpLogger.LogDebugSessionError(_sessionId, "Start", ex);
+
+            lock (_stateLock)
+            {
+                if (_phase == SessionPhase.Live)
+                {
+                    _phase = SessionPhase.Prepared;
+                    _isRunning = false;
+                }
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Everything a fresh debuggee needs of the session, under the caller's lock: a debugger wired
+    /// to the handlers, and the leftovers of whatever was here before cleared away.
+    /// </summary>
+    private DapDebugger TakeOverSession(string what, string logEvent)
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(DebugSession));
+
+        if (_phase != SessionPhase.Idle)
+            throw new InvalidOperationException("This session already has a debuggee");
+
+        McpLogger.LogDebugSessionEvent(_sessionId, logEvent, what);
+
+        var debugger = new DapDebugger(LogMessage);
+
+        debugger.OnStopped += OnDebuggerStopped;
+        debugger.OnContinued += OnDebuggerContinued;
+        debugger.OnExited += OnDebuggerExited;
+        debugger.OnOutput += OnDebuggerOutput;
+        debugger.OnBreakpointChanged += OnDebuggerBreakpointChanged;
+
+        _debugger = debugger;
+        _lastBreakpoint = null;
+        _exceptionsSeen = 0;
+        _exceptionsIgnored = 0;
+        _output.Clear();
+        ClearStopState();
+
+        return debugger;
+    }
+
     private void OnDebuggerStopped(int threadId, string reason, IReadOnlyList<int>? hitBreakpointIds)
     {
         bool ignoring;
@@ -204,7 +345,7 @@ public class DebugSession : IDisposable
             // moment later would let a caller see - and act on - a stop the mode promised to hide.
             ignoring = reason == ExceptionStopReason
                 && _exceptionBreakMode == ExceptionBreakMode.Never
-                && _attachedProcessId.HasValue;
+                && _phase == SessionPhase.Live;
 
             if (ignoring)
             {
@@ -254,7 +395,7 @@ public class DebugSession : IDisposable
                     DapDebugger? debugger;
 
                     lock (_stateLock)
-                        debugger = _attachedProcessId.HasValue ? _debugger : null;
+                        debugger = _phase == SessionPhase.Live ? _debugger : null;
 
                     debugger?.Continue(threadId);
                 }
@@ -264,7 +405,7 @@ public class DebugSession : IDisposable
                     // claiming it runs - that is the one thing worse than an unwanted stop
                     lock (_stateLock)
                     {
-                        if (_attachedProcessId.HasValue)
+                        if (_phase == SessionPhase.Live)
                         {
                             _isRunning = false;
                             _lastStoppedThreadId = threadId;
@@ -291,7 +432,7 @@ public class DebugSession : IDisposable
 
         lock (_stateLock)
         {
-            if (_locationResolved || _isRunning || !_attachedProcessId.HasValue || _lastStoppedThreadId is null)
+            if (_locationResolved || _isRunning || _phase != SessionPhase.Live || _lastStoppedThreadId is null)
                 return;
 
             threadId = _lastStoppedThreadId.Value;
@@ -375,6 +516,31 @@ public class DebugSession : IDisposable
     {
         McpLogger.LogDebug("Session {SessionId} | Output: {Message}", _sessionId, message);
         LogMessage($"Output{(isError ? " (stderr)" : string.Empty)}: {message}");
+
+        lock (_stateLock)
+        {
+            _output.Enqueue(new OutputLine(message.TrimEnd('\r', '\n'), isError));
+
+            while (_output.Count > MaxBufferedOutputLines)
+                _output.Dequeue();
+        }
+    }
+
+    /// <summary>
+    /// What the debuggee has written so far, oldest first. A launched program has its streams
+    /// redirected into the debug adapter, so this is the only place its output can be read.
+    /// </summary>
+    public IReadOnlyList<OutputLine> ReadOutput(int maxLines)
+    {
+        lock (_stateLock)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(DebugSession));
+
+            return maxLines >= _output.Count
+                ? _output.ToList()
+                : _output.Skip(_output.Count - maxLines).ToList();
+        }
     }
 
     /// <summary>
@@ -429,15 +595,17 @@ public class DebugSession : IDisposable
         lock (_stateLock)
         {
             return new ExecutionState(
-                _attachedProcessId.HasValue && _isRunning,
-                _attachedProcessId.HasValue,
+                _phase == SessionPhase.Live && _isRunning,
+                _phase != SessionPhase.Idle,
                 _attachedProcessId,
                 _currentLocation,
                 _lastBreakpoint,
                 _lastStoppedThreadId,
                 _lastStopReason,
                 _exceptionsSeen,
-                _exceptionsIgnored);
+                _exceptionsIgnored,
+                _launchedProgram,
+                _phase != SessionPhase.Prepared);
         }
     }
 
@@ -806,7 +974,23 @@ public class DebugSession : IDisposable
     private TResult WaitForBinding<TResult>(Func<TResult?> snapshot, Func<TResult, bool> isVerified)
         where TResult : class
     {
-        TResult? current = null;
+        TResult? current;
+
+        bool beforeTheProgramRuns;
+
+        lock (_stateLock)
+            beforeTheProgramRuns = _phase == SessionPhase.Prepared;
+
+        // Nothing can bind before the program is started - no modules are loaded, and the debuggee
+        // does not exist. Such a breakpoint stays pending on purpose and binds during the launch.
+        if (beforeTheProgramRuns)
+        {
+            current = snapshot();
+
+            return current ?? throw new InvalidOperationException("Breakpoint disappeared while being set");
+        }
+
+        current = null;
 
         WaitFor(() =>
         {
@@ -919,7 +1103,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public List<StackFrameInfo> GetStackTrace(int threadId)
     {
-        return RequireDebugger().GetStackTrace(threadId);
+        return RequireLiveDebugger().GetStackTrace(threadId);
     }
 
     /// <summary>
@@ -927,7 +1111,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public List<ThreadInfo> GetThreads()
     {
-        var threads = RequireDebugger().GetThreads();
+        var threads = RequireLiveDebugger().GetThreads();
         return threads.Select(t => new ThreadInfo(t.Id, t.Name)).ToList();
     }
 
@@ -938,7 +1122,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public async Task<List<VariableInfo>> GetVariables(int frameId)
     {
-        var debugger = RequireDebugger();
+        var debugger = RequireLiveDebugger();
 
         // Call async methods outside the lock to avoid deadlocks
         return await Task.Run(() => debugger.GetFrameVariables(frameId));
@@ -950,7 +1134,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public async Task<List<VariableInfo>> ExpandVariable(int variablesReference)
     {
-        var debugger = RequireDebugger();
+        var debugger = RequireLiveDebugger();
 
         // Off the caller's thread: the request blocks until the adapter answers
         return await Task.Run(() => debugger.GetVariables(variablesReference));
@@ -962,7 +1146,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public bool Continue()
     {
-        var debugger = RequireDebugger();
+        var debugger = RequireLiveDebugger();
 
         // Continuing an already-running process throws CORDBG_E_SUPERFLOUS_CONTINUE out of COM.
         if (!TryBeginResume())
@@ -984,7 +1168,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public ExecutionState? WaitForStop(TimeSpan timeout)
     {
-        RequireDebugger();
+        RequireLiveDebugger();
 
         var stopped = WaitFor(() =>
         {
@@ -1007,7 +1191,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public void Pause()
     {
-        var debugger = RequireDebugger();
+        var debugger = RequireLiveDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "Pause", "Breaking execution");
         debugger.Pause(StoppedThreadOrFirst(debugger));
@@ -1025,7 +1209,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public void StepOver(int threadId)
     {
-        var debugger = RequireDebugger();
+        var debugger = RequireLiveDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "StepOver", $"Thread {threadId}");
         BeginStep();
@@ -1037,7 +1221,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public void StepInto(int threadId)
     {
-        var debugger = RequireDebugger();
+        var debugger = RequireLiveDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "StepInto", $"Thread {threadId}");
         BeginStep();
@@ -1049,7 +1233,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public void StepOut(int threadId)
     {
-        var debugger = RequireDebugger();
+        var debugger = RequireLiveDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "StepOut", $"Thread {threadId}");
         BeginStep();
@@ -1061,7 +1245,7 @@ public class DebugSession : IDisposable
     /// </summary>
     public async Task<EvaluationResult> EvaluateExpression(string expression, int frameId)
     {
-        var debugger = RequireDebugger();
+        var debugger = RequireLiveDebugger();
 
         return await Task.Run(() => debugger.Evaluate(expression, frameId)).WaitAsync(_evaluationTimeout);
     }
@@ -1094,16 +1278,24 @@ public class DebugSession : IDisposable
     private void DetachCoreUnsynchronized()
     {
         DapDebugger? debuggerToRelease;
+        bool weStartedIt;
+        bool wasRunning;
+        int stoppedThreadId;
 
         lock (_stateLock)
         {
             if (_debugger == null)
             {
                 _attachedProcessId = null;
+                _launchedProgram = null;
+                _phase = SessionPhase.Idle;
                 return;
             }
 
             debuggerToRelease = _debugger;
+            weStartedIt = _launchedProgram != null;
+            wasRunning = _phase == SessionPhase.Live && _isRunning;
+            stoppedThreadId = _lastStoppedThreadId ?? 0;
 
             // Unsubscribe from events
             debuggerToRelease.OnStopped -= OnDebuggerStopped;
@@ -1114,6 +1306,8 @@ public class DebugSession : IDisposable
 
             _debugger = null;
             _attachedProcessId = null;
+            _launchedProgram = null;
+            _phase = SessionPhase.Idle;
             _isRunning = false;
             _breakpoints.Clear();
             _lastBreakpoint = null;
@@ -1124,7 +1318,23 @@ public class DebugSession : IDisposable
         // never let go by ICorDebug and stays suspended for the rest of its life.
         try
         {
-            debuggerToRelease.Disconnect(terminateDebuggee: false);
+            // A program we started is ours to clean up, and terminating it needs it synchronized:
+            // ICorDebugProcess::Terminate fails with CORDBG_E_PROCESS_NOT_SYNCHRONIZED on a running
+            // debuggee, and the failure is swallowed, leaving the process alive behind a request
+            // that reported success. Pausing first is what makes the terminate land.
+            if (weStartedIt && wasRunning)
+            {
+                try
+                {
+                    debuggerToRelease.Pause(stoppedThreadId);
+                }
+                catch (Exception ex)
+                {
+                    McpLogger.LogDebugSessionError(_sessionId, "PauseBeforeTerminate", ex);
+                }
+            }
+
+            debuggerToRelease.Disconnect(terminateDebuggee: weStartedIt);
             debuggerToRelease.Dispose();
         }
         catch (Exception ex)
@@ -1134,7 +1344,26 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Resolve the debugger for an operation that requires an attached process
+    /// Resolve the debugger for an operation that needs a process to exist. A launched program that
+    /// has not been started yet has none: it is described to the debugger and nothing more.
+    /// </summary>
+    private DapDebugger RequireLiveDebugger()
+    {
+        lock (_stateLock)
+        {
+            var debugger = RequireDebugger();
+
+            if (_phase != SessionPhase.Live)
+                throw new InvalidOperationException(
+                    $"{_launchedProgram} has been launched but not started. Call start_program to run it.");
+
+            return debugger;
+        }
+    }
+
+    /// <summary>
+    /// Resolve the debugger for an operation that a launched program accepts before it runs, which
+    /// is what breakpoints are for: they have to be in place before the first line executes.
     /// </summary>
     private DapDebugger RequireDebugger()
     {
@@ -1143,7 +1372,7 @@ public class DebugSession : IDisposable
             if (_disposed)
                 throw new ObjectDisposedException(nameof(DebugSession));
 
-            if (!_attachedProcessId.HasValue)
+            if (_phase == SessionPhase.Idle)
                 throw new InvalidOperationException("Not attached to a process");
 
             if (_debugger == null)
@@ -1270,7 +1499,14 @@ public record ExecutionState(
     int? StoppedThreadId = null,
     string? StopReason = null,
     int ExceptionsSeen = 0,
-    int ExceptionsIgnored = 0);
+    int ExceptionsIgnored = 0,
+    string? LaunchedProgram = null,
+    bool Started = true);
+
+/// <summary>
+/// A line the debuggee wrote, and which stream it came out of
+/// </summary>
+public record OutputLine(string Text, bool IsError);
 
 /// <summary>
 /// What the session does when the debuggee stops on a first-chance exception

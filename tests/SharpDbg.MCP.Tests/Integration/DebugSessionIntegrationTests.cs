@@ -551,11 +551,11 @@ public sealed class DebugSessionIntegrationTests
         using var debuggeeB = DebuggeeProcess.Start();
         using var manager = new DebugSessionManager(new ServerConfiguration { MaxConcurrentSessions = 2 });
 
-        var sessionA = manager.AcquireForAttach(null);
+        var sessionA = manager.AcquireForDebuggee(null);
         await sessionA.Attach(debuggeeA.ProcessId);
 
         // Attaching again while the first session is busy has to open a second one
-        var sessionB = manager.AcquireForAttach(null);
+        var sessionB = manager.AcquireForDebuggee(null);
         await sessionB.Attach(debuggeeB.ProcessId);
 
         Assert.AreNotEqual(sessionA.SessionId, sessionB.SessionId);

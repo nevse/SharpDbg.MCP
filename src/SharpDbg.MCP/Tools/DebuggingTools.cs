@@ -108,7 +108,7 @@ public sealed class DebuggingTools
 
             // A second attach opens a second session rather than failing, up to
             // SHARPDBG_MAX_SESSIONS
-            var session = _sessionManager.AcquireForAttach(session_id);
+            var session = _sessionManager.AcquireForDebuggee(session_id);
             session.Attach(process_id).GetAwaiter().GetResult();
 
             var response = new
@@ -117,6 +117,108 @@ public sealed class DebuggingTools
                 session_id = session.SessionId,
                 process_id = process_id,
                 message = $"Successfully attached to process {process_id}"
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return DebuggerErrors.ErrorResponse(ex);
+        }
+    }
+
+    [McpServerTool, Description(
+        "Launch a .NET program under the debugger without running it yet. This is the only way to " +
+        "debug what happens at startup: breakpoints set now are in place before the first line " +
+        "executes. Pass the built program - the .dll or the executable next to it - not a project " +
+        "file. Then set breakpoints and call start_program to run it. The program's output is " +
+        "captured rather than printed, and read with get_program_output. A program launched this " +
+        "way is killed when the session is detached or closed.")]
+    public string LaunchProgram(
+        string program_path,
+        string[]? args = null,
+        string? working_directory = null,
+        Dictionary<string, string>? environment = null,
+        int? session_id = null)
+    {
+        try
+        {
+            var program = InputValidation.ValidateProgramPath(program_path);
+            InputValidation.ValidateWorkingDirectory(working_directory);
+
+            var session = _sessionManager.AcquireForDebuggee(session_id);
+            session.Launch(program, args, working_directory, environment).GetAwaiter().GetResult();
+
+            var response = new
+            {
+                success = true,
+                session_id = session.SessionId,
+                program,
+                started = false,
+                message = "Launched but not started. Set breakpoints now - they will be in place " +
+                    "before the program runs - then call start_program."
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return DebuggerErrors.ErrorResponse(ex);
+        }
+    }
+
+    [McpServerTool, Description(
+        "Run the program prepared by launch_program. Returns as soon as it is running, which can be " +
+        "after it has already hit a breakpoint; use wait_for_stop to catch that. The process id is " +
+        "not reported: the debugger does not say what it started.")]
+    public string StartProgram(int? session_id = null)
+    {
+        try
+        {
+            var session = _sessionManager.Resolve(session_id);
+            session.Start();
+
+            var state = session.GetExecutionState();
+
+            var response = new
+            {
+                success = true,
+                session_id = session.SessionId,
+                program = state.LaunchedProgram,
+                started = true,
+                is_running = state.IsRunning,
+                current_location = state.CurrentLocation,
+                stop_reason = state.StopReason
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return DebuggerErrors.ErrorResponse(ex);
+        }
+    }
+
+    [McpServerTool, Description(
+        "Read what the debuggee has written to stdout and stderr, oldest line first. Only a " +
+        "launched program's output is captured - a process attached to with attach_to_process keeps " +
+        "its own console, and nothing appears here. Returns at most max_lines (default 100) of the " +
+        "most recent output; the last 1000 lines are kept.")]
+    public string GetProgramOutput(int max_lines = 100, int? session_id = null)
+    {
+        try
+        {
+            InputValidation.ValidateOutputLineCount(max_lines);
+
+            var session = _sessionManager.Resolve(session_id);
+            var lines = session.ReadOutput(max_lines);
+
+            var response = new
+            {
+                success = true,
+                session_id = session.SessionId,
+                count = lines.Count,
+                output = lines.Select(l => new { text = l.Text, stream = l.IsError ? "stderr" : "stdout" }).ToList()
             };
 
             return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
@@ -236,8 +338,10 @@ public sealed class DebuggingTools
                 session_id = session.SessionId,
                 is_attached = state.IsAttached,
                 process_id = state.ProcessId,
+                program = state.LaunchedProgram,
+                started = state.Started,
                 is_running = state.IsRunning,
-                is_stopped = state.IsAttached && !state.IsRunning,
+                is_stopped = state.IsAttached && state.Started && !state.IsRunning,
                 current_location = state.CurrentLocation,
                 stop_reason = state.StopReason,
                 exception_break_mode = session.ExceptionBreakMode.ToString().ToLowerInvariant(),
@@ -264,7 +368,8 @@ public sealed class DebuggingTools
 
     [McpServerTool, Description(
         "List the open debug sessions, which is how you find the session_id to pass to the other " +
-        "tools. A session is created by attach_to_process and lives until close_session or detach.")]
+        "tools. A session is created by attach_to_process or launch_program and lives until " +
+        "close_session or detach. started=false means the program is launched and waiting to run.")]
     public string ListSessions()
     {
         try
@@ -284,6 +389,8 @@ public sealed class DebuggingTools
                     {
                         session_id = s.SessionId,
                         process_id = state.ProcessId,
+                        program = state.LaunchedProgram,
+                        started = state.Started,
                         is_attached = state.IsAttached,
                         is_running = state.IsRunning,
                         stop_reason = state.StopReason,
@@ -301,8 +408,9 @@ public sealed class DebuggingTools
     }
 
     [McpServerTool, Description(
-        "Close a debug session, detaching from its process if it is still attached. Use this to free " +
-        "a slot when SHARPDBG_MAX_SESSIONS has been reached.")]
+        "Close a debug session, detaching from its process if it is still attached. A program this " +
+        "session launched is killed. Use this to free a slot when SHARPDBG_MAX_SESSIONS has been " +
+        "reached.")]
     public string CloseSession(int session_id)
     {
         try
@@ -311,6 +419,7 @@ public sealed class DebuggingTools
             // nothing
             var session = _sessionManager.Resolve(session_id);
             var processId = session.AttachedProcessId;
+            var launchedProgram = session.LaunchedProgram;
 
             _sessionManager.CloseSession(session_id);
 
@@ -318,9 +427,12 @@ public sealed class DebuggingTools
             {
                 success = true,
                 session_id,
-                message = processId.HasValue
-                    ? $"Session {session_id} closed and detached from process {processId.Value}"
-                    : $"Session {session_id} closed"
+                message = (processId, launchedProgram) switch
+                {
+                    (not null, _) => $"Session {session_id} closed and detached from process {processId.Value}",
+                    (_, not null) => $"Session {session_id} closed and {launchedProgram} killed",
+                    _ => $"Session {session_id} closed"
+                }
             };
 
             return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
@@ -332,8 +444,10 @@ public sealed class DebuggingTools
     }
 
     [McpServerTool, Description(
-        "Detach the debugger from a session's process. The session stays open and unattached, so the " +
-        "next attach_to_process reuses it rather than taking another slot; close_session removes it.")]
+        "Detach the debugger from a session's process, leaving that process running. A program the " +
+        "session launched is killed instead: it exists only for this session. The session stays " +
+        "open and free, so the next attach_to_process or launch_program reuses it rather than " +
+        "taking another slot; close_session removes it.")]
     public string DetachFromProcess(int? session_id = null)
     {
         try
@@ -351,13 +465,16 @@ public sealed class DebuggingTools
             }
 
             var processId = session.AttachedProcessId;
+            var launchedProgram = session.LaunchedProgram;
             session.Detach();
 
             var response = new
             {
                 success = true,
                 session_id = session.SessionId,
-                message = $"Successfully detached from process {processId}"
+                message = launchedProgram != null
+                    ? $"Killed {launchedProgram}"
+                    : $"Successfully detached from process {processId}"
             };
 
             return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });

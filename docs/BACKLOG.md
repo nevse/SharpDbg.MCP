@@ -7,10 +7,15 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 Defects in SharpDbg and one in the .NET debugger shim limit what this server can do.
 
-Short version, on SharpDbg 0.1.12: exception stops cannot be filtered by type or handled-ness, and
-the test suite is occasionally killed by a crash inside `libmscordbi` during attach - the second is a
-.NET runtime bug rather than a SharpDbg one. Stepping into code without symbols and hits on a
-just-replaced breakpoint used to belong here; both are fixed upstream.
+Short version, on SharpDbg 0.1.12: exception stops cannot be filtered by type or handled-ness, a
+launched program reports neither its process id nor its exit code, and the test suite is occasionally
+killed by a crash inside `libmscordbi` during attach - the last is a .NET runtime bug rather than a
+SharpDbg one. Stepping into code without symbols and hits on a just-replaced breakpoint used to belong
+here; both are fixed upstream.
+
+Terminating a *running* debuggee fails inside ICorDebug and reports success anyway, which would leak
+every program we launch. Closing a session pauses first, which makes the terminate land, so this one
+costs us a workaround rather than a limitation.
 
 The recovery half of the replaced-breakpoint freeze went upstream as
 [#27](https://github.com/MattParkerDev/sharpdbg/pull/27) and landed in 0.1.10; the throw in

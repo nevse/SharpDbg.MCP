@@ -12,7 +12,7 @@ internal static class Program
         // Off by default, so tests that are not about exceptions are not disturbed by them
         var throwEachIteration = args.Contains("--throw");
 
-        Console.WriteLine($"PID={Environment.ProcessId}");
+        Console.WriteLine($"PID={Environment.ProcessId}"); // STARTUP-TARGET
         Console.Out.Flush();
 
         var counter = 0;

@@ -17,6 +17,14 @@ internal static class TestPaths
         _repositoryRoot.Value, "tests", TestAppName, "Program.cs");
 
     /// <summary>
+    /// The apphost built next to the assembly. Launching it goes down a different path in SharpDbg
+    /// than launching the .dll, which is handed to the dotnet muxer instead.
+    /// </summary>
+    public static string TestAppExecutable => Path.Combine(
+        _repositoryRoot.Value, "tests", TestAppName, "bin", Configuration, TargetFramework,
+        OperatingSystem.IsWindows() ? $"{TestAppName}.exe" : TestAppName);
+
+    /// <summary>
     /// Build configuration of the running test assembly (Debug/Release)
     /// </summary>
     private static string Configuration => Path.GetFileName(Path.GetDirectoryName(BaseDirectory)!);

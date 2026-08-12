@@ -15,7 +15,7 @@ SharpDbg MCP Server provides two main capabilities:
 
 1. **Documentation Access**: Search and explore comprehensive documentation about .NET debugger internals, including ICorDebug API, Debug Adapter Protocol (DAP), expression evaluation, and debugging workflows.
 
-2. **Interactive Debugging**: Attach to .NET processes and perform debugging operations through MCP tools (in development).
+2. **Interactive Debugging**: Launch a .NET program under the debugger or attach to one that is already running, then set breakpoints, step, inspect variables and evaluate expressions through MCP tools (in development).
 
 ## Why Use This?
 
@@ -107,18 +107,20 @@ process even with this enabled, so in practice it matters when the server runs e
 By default the server debugs one process at a time. `SHARPDBG_MAX_SESSIONS` raises that, and each
 session has its own process, its own breakpoints and its own stops.
 
-`attach_to_process` returns a `session_id`. While only one session is open you can ignore it — every
-tool defaults to the only session, exactly as before. Attaching a second process opens a second
-session instead of failing, and from then on `session_id` becomes **required**: with two processes
-open, guessing which one a `continue_execution` was meant for would be worse than asking for the id.
+`attach_to_process` and `launch_program` return a `session_id`. While only one session is open you can
+ignore it — every tool defaults to the only session, exactly as before. Taking on a second process
+opens a second session instead of failing, and from then on `session_id` becomes **required**: with two
+processes open, guessing which one a `continue_execution` was meant for would be worse than asking for
+the id.
 
 ```
-list_sessions                     → which sessions exist, and what each is attached to
+list_sessions                     → which sessions exist, and what each is debugging
 close_session(session_id)         → detach and free the slot
 ```
 
-`detach_from_process` leaves the session open but unattached, so the next `attach_to_process` reuses it
-rather than taking another slot. Reaching the limit is reported with what to do about it:
+`detach_from_process` leaves the session open and free, so the next `attach_to_process` or
+`launch_program` reuses it rather than taking another slot. Reaching the limit is reported with what to
+do about it:
 
 ```
 Maximum number of concurrent debug sessions (1) reached.
@@ -311,15 +313,55 @@ Attach the debugger to a .NET process.
 while another process is already being debugged opens a second session — see [Debugging more than one
 process](#debugging-more-than-one-process).
 
+#### `launch_program`
+Start a program under the debugger instead of attaching to one that is already running. The program is
+prepared but not run, so breakpoints set afterwards are in place before its first line executes — which
+is the only way to debug what a program does at startup.
+
+**Parameters:**
+- `program_path` (string): The built program — the `.dll` or the executable next to it, not a project
+  file
+- `args` (string array, optional): Command-line arguments for the program
+- `working_directory` (string, optional): Defaults to the directory the program is in
+- `environment` (object, optional): Extra environment variables
+- `session_id` (int, optional): Launch in this existing session rather than picking one
+
+**Returns:** The `session_id` and the program that was prepared, with `started: false`. Call
+`start_program` once the breakpoints are set.
+
+The program's output is captured rather than printed — read it with `get_program_output`. A program
+launched this way belongs to its session: `detach_from_process` and `close_session` kill it.
+
+#### `start_program`
+Run the program prepared by `launch_program`.
+
+**Parameters:** None
+
+**Returns:** Execution state after the start. The program may have hit a breakpoint before this
+returns; `wait_for_stop` is what catches that. The process ID is not reported — the debugger never says
+what it started.
+
+#### `get_program_output`
+Read what the debuggee has written to stdout and stderr, oldest line first.
+
+**Parameters:**
+- `max_lines` (int, optional): How many of the most recent lines to return, default `100`
+
+**Returns:** The buffered output, each line tagged `stdout` or `stderr`. Only a launched program's
+output appears here: a process you attached to keeps its own console. The last 1000 lines are kept.
+
 #### `get_process_status`
 Check the status of the current debug session.
 
 **Parameters:** None
 
-**Returns:** Session state including attachment status, process ID, and execution state.
+**Returns:** Session state including attachment status, process ID, and execution state. For a launched
+program, `program` names it and `started` says whether it is running yet; `process_id` stays null,
+because the debugger does not report the process it started.
 
 #### `detach_from_process`
-Detach the debugger from the current process.
+Detach the debugger from the current process, leaving that process running. A program the session
+launched is killed instead — it exists only for that session.
 
 **Parameters:** None
 
@@ -507,6 +549,9 @@ that is fixed in 0.1.9, and this server builds against 0.1.12.
   exception, so exception breaks can only be all or nothing (`set_exception_break_mode`)
 - **Filtering exception breaks by type** - reading the exception's type is possible but the stop
   itself carries no type, so there is nothing to filter on before stopping
+- **The process id of a launched program** - the debugger reports nothing about the process it starts,
+  so `process_id` is null for a session created by `launch_program`
+- **The exit code of a launched program** - always reported as 0, whatever the program returned
 - **Watch Expressions** - Continuous monitoring of expression values
 
 **Not Implemented Yet:**
@@ -580,7 +625,31 @@ Claude: "Found the bug! The issue is at line 42 where ValidateEmail() doesn't
 handle null email addresses. Add a null check before calling this method."
 ```
 
-### Example 4: Stepping Through Code
+### Example 4: Debugging Startup
+
+```
+User: "My app throws before it prints anything. Find out why."
+
+Claude: [Uses launch_program("/path/to/bin/Debug/net10.0/MyApp.dll")]
+"Prepared, not running yet. Setting a breakpoint on the first line of Main."
+
+Claude: [Uses set_breakpoint("/path/to/Program.cs", 12)]
+"Breakpoint set. It is unverified for now - nothing can bind before the program
+has loaded its modules - and takes effect when the program starts."
+
+Claude: [Uses start_program()]
+Claude: [Uses wait_for_stop()]
+"Stopped at Program.cs:12, before a single line has run."
+
+Claude: [Uses step_over(thread_id: 1)]
+Claude: [Uses get_variables(frame_id: 0)]
+"configPath is null, and the next line passes it to File.ReadAllText."
+
+Claude: [Uses get_program_output()]
+"The program printed nothing before the throw, which matches what you saw."
+```
+
+### Example 5: Stepping Through Code
 
 ```
 User: "Step through the DoubleNumbers method to see what's happening"
@@ -629,11 +698,12 @@ SharpDbg.MCP/
 │       └── Data/
 │           └── how_dotnet_debuggers_work.md  # Embedded documentation
 ├── tests/
+│   ├── SharpDbg.MCP.TestApp/          # The debuggee the integration tests drive
 │   └── SharpDbg.MCP.Tests/
 │       ├── Configuration/
-│       │   └── ServerConfigurationTests.cs
+│       ├── Debugging/
+│       ├── Integration/               # Real debuggee, real breakpoints, real stops
 │       └── Tools/
-│           └── InputValidationTests.cs
 ├── examples/                    # Extension examples and templates
 ├── scripts/                     # Developer helper scripts
 ├── .github/workflows/           # CI/CD automation

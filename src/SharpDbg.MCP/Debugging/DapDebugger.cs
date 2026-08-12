@@ -69,17 +69,7 @@ internal sealed class DapDebugger : IDisposable
     /// </summary>
     public async Task Attach(int processId, bool justMyCode, TimeSpan timeout)
     {
-        _host.SendRequestSync(new InitializeRequest
-        {
-            ClientID = "sharpdbg-mcp",
-            ClientName = "SharpDbg MCP Server",
-            AdapterID = "coreclr",
-            Locale = "en-us",
-            LinesStartAt1 = true,
-            ColumnsStartAt1 = true,
-            PathFormat = InitializeArguments.PathFormatValue.Path,
-            SupportsVariableType = true
-        });
+        Initialize();
 
         _host.SendRequestSync(new AttachRequest
         {
@@ -97,6 +87,60 @@ internal sealed class DapDebugger : IDisposable
 
         _host.SendRequestSync(new ConfigurationDoneRequest());
     }
+
+    /// <summary>
+    /// Prepares a program to be debugged and returns before it runs: the adapter only records the
+    /// launch and performs it on configurationDone, which is what <see cref="Start"/> sends. Anything
+    /// set in between - breakpoints above all - is already in place when the program starts, and that
+    /// is the only way to debug its startup, since SharpDbg accepts stopAtEntry and ignores it.
+    /// </summary>
+    public async Task Launch(
+        string program,
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        IReadOnlyDictionary<string, string> environment,
+        bool justMyCode,
+        TimeSpan timeout)
+    {
+        Initialize();
+
+        _host.SendRequestSync(new LaunchRequest
+        {
+            ConfigurationProperties = new Dictionary<string, JToken>
+            {
+                ["name"] = "SharpDbg MCP",
+                ["type"] = "coreclr",
+                ["request"] = "launch",
+                ["program"] = program,
+                ["args"] = new JArray(arguments),
+                ["cwd"] = workingDirectory,
+                ["env"] = JObject.FromObject(environment),
+                ["console"] = "internalConsole",
+                ["justMyCode"] = justMyCode
+            }
+        });
+
+        await _initialized.Task.WaitAsync(timeout).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Starts the program prepared by <see cref="Launch"/>. The request returns once the process has
+    /// been created and attached to, so a stop can already be on its way when it does.
+    /// </summary>
+    public void Start() => _host.SendRequestSync(new ConfigurationDoneRequest());
+
+    private void Initialize() =>
+        _host.SendRequestSync(new InitializeRequest
+        {
+            ClientID = "sharpdbg-mcp",
+            ClientName = "SharpDbg MCP Server",
+            AdapterID = "coreclr",
+            Locale = "en-us",
+            LinesStartAt1 = true,
+            ColumnsStartAt1 = true,
+            PathFormat = InitializeArguments.PathFormatValue.Path,
+            SupportsVariableType = true
+        });
 
     public List<(int Id, string Name)> GetThreads()
     {

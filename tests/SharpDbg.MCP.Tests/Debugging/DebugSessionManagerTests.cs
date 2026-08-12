@@ -66,14 +66,14 @@ public class DebugSessionManagerTests
     }
 
     [TestMethod]
-    public void AcquireForAttach_ReusesASessionThatIsNotAttached()
+    public void AcquireForDebuggee_ReusesASessionThatIsNotAttached()
     {
         using var manager = Manager();
 
         var existing = manager.Resolve(null);
 
         // Nothing is attached, so a second attach must not need another slot
-        Assert.AreSame(existing, manager.AcquireForAttach(null));
+        Assert.AreSame(existing, manager.AcquireForDebuggee(null));
         Assert.HasCount(1, manager.GetAllSessions());
     }
 
