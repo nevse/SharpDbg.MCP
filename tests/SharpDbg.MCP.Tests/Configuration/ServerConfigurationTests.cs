@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -52,7 +54,25 @@ public class ServerConfigurationTests
         Assert.AreEqual(2000, config.BreakpointBindTimeoutMs);
         Assert.IsFalse(config.EnableDiagnostics);
         Assert.IsTrue(config.JustMyCode);
-        Assert.AreEqual("1.0.0", config.Version);
+    }
+
+    /// <summary>
+    /// The version reported to the client over MCP was a constant "1.0.0", which would have stayed
+    /// that way through every release. It now comes from the assembly, stamped from the release tag
+    /// at pack time and defaulted to 0.0.0-dev by the project when no tag supplied one.
+    /// </summary>
+    [TestMethod]
+    public void Version_TracksTheAssembly_RatherThanAConstant()
+    {
+        var stamped = typeof(ServerConfiguration).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+
+        Assert.IsNotNull(stamped, "The build should stamp an informational version");
+
+        // The SDK appends "+<sha>"; a client has no use for it
+        var expected = stamped.Split('+')[0];
+
+        Assert.AreEqual(expected, new ServerConfiguration().Version);
     }
 
     [TestMethod]

@@ -159,36 +159,46 @@ jobs:
     - name: Restore dependencies
       run: dotnet restore
 
-    - name: Build Release
-      run: dotnet build --configuration Release --no-restore
+    # The release tag is the only place a version is written. One RID-agnostic package covers every
+    # platform, because the native shim ships all of them, so there is nothing per-platform to build.
+    - name: Read the version from the tag
+      id: version
+      run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-    - name: Publish Linux x64
-      run: dotnet publish src/SharpDbg.MCP/SharpDbg.MCP.csproj --configuration Release --runtime linux-x64 --self-contained false --output ./publish/linux-x64
-
-    - name: Publish Windows x64
-      run: dotnet publish src/SharpDbg.MCP/SharpDbg.MCP.csproj --configuration Release --runtime win-x64 --self-contained false --output ./publish/win-x64
-
-    - name: Publish macOS x64
-      run: dotnet publish src/SharpDbg.MCP/SharpDbg.MCP.csproj --configuration Release --runtime osx-x64 --self-contained false --output ./publish/osx-x64
-
-    - name: Publish macOS ARM64
-      run: dotnet publish src/SharpDbg.MCP/SharpDbg.MCP.csproj --configuration Release --runtime osx-arm64 --self-contained false --output ./publish/osx-arm64
-
-    - name: Create archives
+    # NuGet.org reads this manifest to generate client configuration, and the MCP Registry matches
+    # its version against the published package
+    - name: Stamp the version into server.json
       run: |
-        cd publish
-        tar -czf ../sharpdbg-mcp-linux-x64.tar.gz -C linux-x64 .
-        zip -r ../sharpdbg-mcp-win-x64.zip win-x64/*
-        tar -czf ../sharpdbg-mcp-osx-x64.tar.gz -C osx-x64 .
-        tar -czf ../sharpdbg-mcp-osx-arm64.tar.gz -C osx-arm64 .
+        python3 - <<'PY'
+        import json, os, pathlib
+        version = os.environ["VERSION"]
+        path = pathlib.Path("src/SharpDbg.MCP/.mcp/server.json")
+        manifest = json.loads(path.read_text())
+        manifest["version"] = version
+        for package in manifest["packages"]:
+            package["version"] = version
+        path.write_text(json.dumps(manifest, indent=2) + "\n")
+        PY
+      env:
+        VERSION: ${{ steps.version.outputs.value }}
 
-    - name: Upload Release Assets
+    - name: Pack
+      run: >
+        dotnet pack src/SharpDbg.MCP/SharpDbg.MCP.csproj
+        --configuration Release
+        -p:Version=${{ steps.version.outputs.value }}
+        --output ./artifacts
+
+    - name: Push to NuGet.org
+      run: >
+        dotnet nuget push ./artifacts/*.nupkg
+        --api-key ${{ secrets.NUGET_API_KEY }}
+        --source https://api.nuget.org/v3/index.json
+        --skip-duplicate
+
+    - name: Attach the package to the release
       uses: softprops/action-gh-release@v3
       with:
-        files: |
-          sharpdbg-mcp-linux-x64.tar.gz
-          sharpdbg-mcp-win-x64.zip
-          sharpdbg-mcp-osx-x64.tar.gz
-          sharpdbg-mcp-osx-arm64.tar.gz
+        files: ./artifacts/*.nupkg
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

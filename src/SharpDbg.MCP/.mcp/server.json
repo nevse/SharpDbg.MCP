@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "name": "io.github.nevse/dotnet-debugger-mcp",
+  "title": ".NET Debugger for MCP",
+  "description": "Give an AI agent a real .NET debugger: breakpoints, stepping, locals, expression evaluation.",
+  "version": "0.0.0-dev",
+  "websiteUrl": "https://github.com/nevse/SharpDbg.MCP",
+  "packages": [
+    {
+      "registryType": "nuget",
+      "registryBaseUrl": "https://api.nuget.org",
+      "identifier": "DotnetDebugger.Mcp",
+      "version": "0.0.0-dev",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [],
+      "environmentVariables": []
+    }
+  ],
+  "repository": {
+    "url": "https://github.com/nevse/SharpDbg.MCP",
+    "source": "github"
+  }
+}

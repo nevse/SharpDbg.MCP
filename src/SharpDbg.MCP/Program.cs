@@ -55,7 +55,8 @@ class Program
             {
                 options.ServerInfo = new Implementation
                 {
-                    Name = "SharpDbg MCP Server",
+                    // Clients show this to the user, so it is the package name they installed
+                    Name = "DotnetDebugger.Mcp",
                     Version = config.Version
                 };
             })
@@ -74,7 +75,7 @@ class Program
         _ = host.Services.GetRequiredService<ConceptIndex>();
         _ = host.Services.GetRequiredService<FlowDiagramProvider>();
 
-        logger.LogInformation("SharpDbg MCP Server v{Version} starting...", config.Version);
+        logger.LogInformation("DotnetDebugger.Mcp v{Version} starting...", config.Version);
         logger.LogInformation("Configuration:");
         logger.LogInformation("  Log Level: {LogLevel}", config.LogLevel);
         logger.LogInformation("  Max Sessions: {MaxSessions}", config.MaxConcurrentSessions);

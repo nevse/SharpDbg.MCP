@@ -4,6 +4,34 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
 
+  <!-- Shipped as a .NET tool, so `dnx DotnetDebugger.Mcp` and `dotnet tool exec` both run it with
+       no path in the client's configuration. One RID-agnostic package covers every platform: the
+       native debugger shim from Microsoft.Diagnostics.DbgShim ships all RIDs under
+       runtimes/<rid>/native, and the tool host picks the right one through the deps.json RID graph.
+       The package id differs from the assembly and namespaces on purpose - renaming those would
+       touch every file for no gain a user can see. -->
+  <PropertyGroup>
+    <!-- The release tag supplies the real one, via -p:Version at pack time. Stated here rather than
+         left to the SDK's 1.0.0 default so an unreleased build says what it is - and so a genuine
+         1.0.0 release is not mistaken for one. -->
+    <Version>0.0.0-dev</Version>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>dotnet-debugger-mcp</ToolCommandName>
+    <PackageId>DotnetDebugger.Mcp</PackageId>
+    <!-- Lists the package under nuget.org/packages?packagetype=mcpserver and gives its page an
+         "MCP Server" tab that generates client configuration from .mcp/server.json -->
+    <PackageType>McpServer</PackageType>
+    <Title>.NET Debugger for MCP</Title>
+    <Description>An MCP server that gives an AI agent a real .NET debugger: attach to a running process or launch a program, set breakpoints, step, read locals and evaluate expressions.</Description>
+    <PackageTags>mcp;model-context-protocol;debugger;debugging;dotnet;ai-agent</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\docs\nuget-readme.md" Pack="true" PackagePath="README.md" />
+    <None Include=".mcp\server.json" Pack="true" PackagePath=".mcp\server.json" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- MCP SDK (preview) -->
     <PackageReference Include="Microsoft.Extensions.Hosting" />

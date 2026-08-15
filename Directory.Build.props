@@ -22,5 +22,7 @@
     <Copyright>Copyright © 2026 SharpDbg MCP Contributors</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/nevse/SharpDbg.MCP</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/nevse/SharpDbg.MCP</PackageProjectUrl>
   </PropertyGroup>
 </Project>

@@ -1,3 +1,5 @@
+using System.Reflection;
+
 using Microsoft.Extensions.Logging;
 
 namespace SharpDbg.MCP.Configuration;
@@ -67,9 +69,25 @@ public class ServerConfiguration
     public bool JustMyCode { get; set; } = true;
 
     /// <summary>
-    /// Server version
+    /// Server version, as reported to the client over MCP. Read from the assembly rather than
+    /// written here, because the package version comes from the release tag at pack time and a
+    /// constant would go stale the moment the two disagreed - which, being cosmetic, nobody notices.
+    /// The project stamps 0.0.0-dev when no tag supplied one, so an unreleased build says so.
     /// </summary>
-    public string Version { get; set; } = "1.0.0";
+    public string Version { get; set; } = ReadAssemblyVersion();
+
+    private static string ReadAssemblyVersion()
+    {
+        var informational = typeof(ServerConfiguration).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+
+        if (string.IsNullOrEmpty(informational))
+            return "0.0.0-dev";
+
+        // The SDK appends the source revision as "+<sha>", which is noise to a client
+        var plus = informational.IndexOf('+');
+        return plus < 0 ? informational : informational[..plus];
+    }
 
     /// <summary>
     /// Load configuration from environment variables

@@ -50,10 +50,15 @@ way to learn it.
 
 ## P3 — distribution
 
-### Ship on NuGet and run via `dnx`
-Installation currently requires cloning, building, and pasting an absolute path into MCP config —
-the README still contains a literal `/absolute/path/to/...` placeholder, which is exactly how a
-"configured" server ends up silently never loading. Packaging the server on NuGet reduces install
-to one copy-pasteable command with no placeholder. Optionally publish `server.json` to the official
-MCP registry.
-**Effort: M**
+### Publish to the official MCP Registry
+The NuGet side is done: the package is `DotnetDebugger.Mcp`, typed `McpServer`, and carries
+`.mcp/server.json`, so nuget.org lists it under `packagetype=mcpserver` and generates client
+configuration from the manifest. The registry is the remaining half, and it is the upstream source
+other registries read, including GitHub's.
+
+It cannot be done until the first package is live, because the registry verifies the package exists
+and that its README declares the matching `mcp-name`. First publish also establishes the
+`io.github.nevse/*` namespace, so it is worth doing by hand once and watching it, rather than
+automating it blind. `mcp-publisher login github`, then `mcp-publisher publish`. Automating it from
+CI afterwards uses GitHub OIDC.
+**Effort: S**

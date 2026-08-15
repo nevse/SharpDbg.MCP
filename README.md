@@ -1,6 +1,16 @@
-# SharpDbg MCP Server
+# DotnetDebugger.Mcp
 
 An MCP (Model Context Protocol) server that exposes .NET debugging capabilities and comprehensive debugger documentation to AI assistants like Claude.
+
+Published on NuGet as [`DotnetDebugger.Mcp`](https://www.nuget.org/packages/DotnetDebugger.Mcp).
+Built on [SharpDbg](https://github.com/MattParkerDev/sharpdbg), driven through its supported debug
+adapter surface.
+
+> **Origin.** A fork of [decriptor/SharpDbg.MCP](https://github.com/decriptor/SharpDbg.MCP), now far
+> enough from it to carry its own name: the debugger layer runs over the supported DAP surface rather
+> than SharpDbg's internal API, launching a program under the debugger is new, and the two have not
+> shared a commit since. The package name differs from the repository name for that reason; the
+> repository keeps its own so existing links survive.
 
 ## ⚠️ Project Status
 
@@ -31,24 +41,15 @@ SharpDbg MCP Server provides two main capabilities:
 
 ## Installation
 
-### 1. Clone and Build
-
-```bash
-git clone https://github.com/nevse/SharpDbg.MCP.git
-cd SharpDbg.MCP
-dotnet build src/SharpDbg.MCP/SharpDbg.MCP.csproj
-```
-
-### 2. Register the server
-
-The server path must be absolute. Running this from the repository root fills it in for you, which
-avoids the most common installation failure: a configuration file that still holds a placeholder
-path, leaving a server that is listed but never starts.
+The server is published on NuGet as
+[`DotnetDebugger.Mcp`](https://www.nuget.org/packages/DotnetDebugger.Mcp). There is nothing to clone,
+build, or point at: one package carries the native debugger shim for every platform, so the same
+configuration works on Windows, macOS and Linux.
 
 **Claude Code**, for the current project:
 
 ```bash
-claude mcp add sharpdbg -- dotnet run --project "$(pwd)/src/SharpDbg.MCP/SharpDbg.MCP.csproj"
+claude mcp add dotnet-debugger -- dotnet tool exec DotnetDebugger.Mcp --yes
 ```
 
 Add `--scope user` to make it available in every project, or `--scope project` to write a `.mcp.json`
@@ -62,22 +63,43 @@ that is committed and shared with your team.
 ```json
 {
   "mcpServers": {
-    "sharpdbg": {
+    "dotnet-debugger": {
       "command": "dotnet",
-      "args": [
-        "run",
-        "--project",
-        "/absolute/path/to/SharpDbg.MCP/src/SharpDbg.MCP/SharpDbg.MCP.csproj"
-      ]
+      "args": ["tool", "exec", "DotnetDebugger.Mcp", "--yes"]
     }
   }
 }
 ```
 
-Replace `/absolute/path/to/SharpDbg.MCP` with the directory you cloned into — running `pwd` at the
-repository root prints it.
+`dnx DotnetDebugger.Mcp --yes` is the equivalent shorter form, and the one NuGet.org suggests. Prefer
+`dotnet tool exec` in a client launched from a desktop environment rather than a shell: `dnx` lives in
+the SDK directory, which such a client often does not have on its `PATH`, while `dotnet` reliably is.
 
-### 3. Restart the client
+### Pinning a version
+
+Installing the tool once avoids the resolution step on every start and keeps the version fixed until
+you change it:
+
+```bash
+dotnet tool install -g DotnetDebugger.Mcp
+```
+
+The command is then `dotnet-debugger-mcp`, with no arguments. This needs `~/.dotnet/tools` on your
+`PATH`, which is why it is not the default suggestion — a client that cannot find the command fails
+the same way a wrong path does.
+
+### Building from source
+
+Only needed to work on the server itself:
+
+```bash
+git clone https://github.com/nevse/SharpDbg.MCP.git
+cd SharpDbg.MCP
+dotnet build src/SharpDbg.MCP/SharpDbg.MCP.csproj
+claude mcp add dotnet-debugger -- dotnet run --project "$(pwd)/src/SharpDbg.MCP/SharpDbg.MCP.csproj"
+```
+
+### Restart the client
 
 MCP servers are connected when a session starts, so a client that is already running will not pick up
 the new server until it is restarted.
@@ -157,9 +179,9 @@ The server can be configured using environment variables. Add them to your Claud
 ```json
 {
   "mcpServers": {
-    "sharpdbg": {
+    "dotnet-debugger": {
       "command": "dotnet",
-      "args": ["run", "--project", "/absolute/path/to/SharpDbg.MCP/src/SharpDbg.MCP/SharpDbg.MCP.csproj"],
+      "args": ["tool", "exec", "DotnetDebugger.Mcp", "--yes"],
       "env": {
         "SHARPDBG_LOG_LEVEL": "Information",
         "SHARPDBG_OPERATION_TIMEOUT_SECONDS": "30",
