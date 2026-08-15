@@ -485,3 +485,7 @@ $RECYCLE.BIN/
 
 # Working notes on upstream defects - kept local, not published
 docs/UPSTREAM.md
+
+# Multi-agent review archive: every round keeps each agent's verbatim stream, so it grows by
+# roughly half a megabyte per round and is local working material, not part of the project
+.revmux/
