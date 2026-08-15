@@ -4,7 +4,7 @@
   "title": ".NET Debugger for MCP",
   "description": "Give an AI agent a real .NET debugger: breakpoints, stepping, locals, expression evaluation.",
   "version": "0.0.0-dev",
-  "websiteUrl": "https://github.com/nevse/SharpDbg.MCP",
+  "websiteUrl": "https://github.com/nevse/dotnet-debugger-mcp",
   "packages": [
     {
       "registryType": "nuget",
@@ -19,7 +19,7 @@
     }
   ],
   "repository": {
-    "url": "https://github.com/nevse/SharpDbg.MCP",
+    "url": "https://github.com/nevse/dotnet-debugger-mcp",
     "source": "github"
   }
 }

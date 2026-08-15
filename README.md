@@ -9,8 +9,8 @@ adapter surface.
 > **Origin.** A fork of [decriptor/SharpDbg.MCP](https://github.com/decriptor/SharpDbg.MCP), now far
 > enough from it to carry its own name: the debugger layer runs over the supported DAP surface rather
 > than SharpDbg's internal API, launching a program under the debugger is new, and the two have not
-> shared a commit since. The package name differs from the repository name for that reason; the
-> repository keeps its own so existing links survive.
+> shared a commit since. This repository was called `SharpDbg.MCP` until the first release; GitHub
+> redirects the old name.
 
 ## ⚠️ Project Status
 
@@ -21,7 +21,7 @@ adapter surface.
 
 ## What is This?
 
-SharpDbg MCP Server provides two main capabilities:
+This server provides two main capabilities:
 
 1. **Documentation Access**: Search and explore comprehensive documentation about .NET debugger internals, including ICorDebug API, Debug Adapter Protocol (DAP), expression evaluation, and debugging workflows.
 
@@ -93,8 +93,8 @@ the same way a wrong path does.
 Only needed to work on the server itself:
 
 ```bash
-git clone https://github.com/nevse/SharpDbg.MCP.git
-cd SharpDbg.MCP
+git clone https://github.com/nevse/dotnet-debugger-mcp.git
+cd dotnet-debugger-mcp
 dotnet build src/SharpDbg.MCP/SharpDbg.MCP.csproj
 claude mcp add dotnet-debugger -- dotnet run --project "$(pwd)/src/SharpDbg.MCP/SharpDbg.MCP.csproj"
 ```

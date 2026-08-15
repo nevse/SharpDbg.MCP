@@ -28,12 +28,12 @@ This project adheres to a code of professionalism and respect. All contributors 
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/SharpDbg.MCP.git
-   cd SharpDbg.MCP
+   git clone https://github.com/YOUR_USERNAME/dotnet-debugger-mcp.git
+   cd dotnet-debugger-mcp
    ```
 3. **Add upstream remote**:
    ```bash
-   git remote add upstream https://github.com/ORIGINAL_OWNER/SharpDbg.MCP.git
+   git remote add upstream https://github.com/nevse/dotnet-debugger-mcp.git
    ```
 
 ## Development Setup

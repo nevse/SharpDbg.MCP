@@ -69,7 +69,7 @@ It also answers questions about .NET debugging internals: `search_debugging_conc
 
 Every setting is optional and read from the environment — timeouts, session limits, Just My Code,
 diagnostics. They are documented in the
-[full README](https://github.com/nevse/SharpDbg.MCP#configuration).
+[full README](https://github.com/nevse/dotnet-debugger-mcp#configuration).
 
 ## Origin
 
@@ -78,4 +78,4 @@ to warrant its own name: the debugger layer now runs over the supported DAP surf
 SharpDbg's internal API, and launching a program under the debugger is new.
 
 MIT licensed. Issues and full documentation:
-[github.com/nevse/SharpDbg.MCP](https://github.com/nevse/SharpDbg.MCP).
+[github.com/nevse/dotnet-debugger-mcp](https://github.com/nevse/dotnet-debugger-mcp).
