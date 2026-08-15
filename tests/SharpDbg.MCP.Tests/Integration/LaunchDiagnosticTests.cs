@@ -44,6 +44,7 @@ public sealed class LaunchDiagnosticTests
     [TestMethod]
     public void Diagnostic_AssemblyThenApphostThenAssembly()
     {
+        ReportCodeSigning();
         Report("before any launch");
 
         Launch("assembly (baseline)", TestPaths.TestAppAssembly);
@@ -56,6 +57,64 @@ public sealed class LaunchDiagnosticTests
     }
 
     private static void Log(string message) => Console.Error.WriteLine($"PROBE {message}");
+
+    /// <summary>
+    /// On this machine the apphost is ad-hoc signed with no entitlements at all, while the dotnet
+    /// host carries com.apple.security.get-task-allow and cs.debugger - the pair that lets another
+    /// process call task_for_pid on it, which is what debugging needs. That asymmetry lines up
+    /// exactly with which launches work: `dotnet app.dll` debugs dotnet, an apphost debugs itself.
+    /// It does not explain the runner on its own, since the same apphost is debuggable here, so this
+    /// prints the runner's side of it: same signature, or a stricter policy.
+    /// </summary>
+    private static void ReportCodeSigning()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        Log("=== code signing ===");
+        Log($" SIP: {RunAndCapture("csrutil", "status").Trim()}");
+        Log($" developer mode: {RunAndCapture("DevToolsSecurity", "-status").Trim()}");
+
+        foreach (var (what, path) in new[]
+                 {
+                     ("apphost", TestPaths.TestAppExecutable),
+                     ("dotnet", RunAndCapture("/usr/bin/which", "dotnet").Trim())
+                 })
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                Log($" {what}: not found at '{path}'");
+                continue;
+            }
+
+            // codesign writes its report to stderr, so both streams matter here
+            Log($" {what} signature: {RunAndCaptureBothStreams("codesign", $"-dv \"{path}\"").ReplaceLineEndings(" | ")}");
+            Log($" {what} entitlements: {RunAndCaptureBothStreams("codesign", $"-d --entitlements - \"{path}\"").ReplaceLineEndings(" | ")}");
+        }
+    }
+
+    private static string RunAndCaptureBothStreams(string file, string arguments)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("/bin/sh", $"-c \"{file} {arguments} 2>&1\"")
+            {
+                RedirectStandardOutput = true,
+                UseShellExecute = false
+            });
+
+            if (process is null)
+                return string.Empty;
+
+            var output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit(10000);
+            return output.Trim();
+        }
+        catch (Exception ex)
+        {
+            return $"({ex.Message})";
+        }
+    }
 
     private static void Launch(string what, string program)
     {
