@@ -962,11 +962,11 @@ public sealed class DebugSessionIntegrationTests
     public async Task SetBreakpoint_OnAPathTheTargetDoesNotContain_ReportsUnverifiedWithinTheBindTimeout()
     {
         var bindTimeout = TimeSpan.FromMilliseconds(500);
+        var configuration = new ServerConfiguration { BreakpointBindTimeoutMs = (int)bindTimeout.TotalMilliseconds };
+        var operationTimeout = TimeSpan.FromSeconds(configuration.OperationTimeoutSeconds);
 
         using var debuggee = DebuggeeProcess.Start();
-        using var session = new DebugSession(
-            1,
-            new ServerConfiguration { BreakpointBindTimeoutMs = (int)bindTimeout.TotalMilliseconds });
+        using var session = new DebugSession(1, configuration);
 
         await session.Attach(debuggee.ProcessId);
 
@@ -977,8 +977,13 @@ public sealed class DebugSessionIntegrationTests
         Assert.IsFalse(result.Verified, "A path the target does not contain cannot bind");
         Assert.IsNotNull(result.Message, "The caller needs to know why the breakpoint is unverified");
 
-        // Bounded by the configured bind timeout rather than by the operation timeout
-        Assert.IsLessThan(bindTimeout * 6, elapsed.Elapsed, "SetBreakpoint stalled well past the bind timeout");
+        // Bounded by the bind timeout rather than by the operation timeout, which is what the
+        // regression cost. The ceiling is not a small multiple of the bind timeout, which this
+        // asserted until a loaded CI runner took 10s of it: RetryWhileModulesLoad makes up to five
+        // attempts, and each carries its own bind wait and its own round trip. What is worth pinning
+        // is the property the fix gave us - that an unbindable breakpoint comes back nowhere near
+        // the operation timeout it used to cost.
+        Assert.IsLessThan(operationTimeout / 2, elapsed.Elapsed, "SetBreakpoint stalled towards the operation timeout");
 
         // And the wait did happen - a pending breakpoint gets its chance to bind
         Assert.IsGreaterThan(bindTimeout / 2, elapsed.Elapsed, "SetBreakpoint did not wait for the breakpoint to bind");
