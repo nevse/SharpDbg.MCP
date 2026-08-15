@@ -59,6 +59,9 @@ public class DebugSession : IDisposable
     private int? _attachedProcessId;
     private bool _disposed;
     private bool _isRunning;
+    // Outcome of the last teardown, kept because Dispose cannot return one and close_session has
+    // nothing else to report from
+    private bool _suspendedForTerminate = true;
     private string? _currentLocation;
     // A DAP stop reports no location; it is fetched on demand, see ResolveStopLocation
     private bool _locationResolved = true;
@@ -162,6 +165,22 @@ public class DebugSession : IDisposable
             lock (_stateLock)
             {
                 return _launchedProgram;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether the last teardown suspended a launched program before terminating it. Readable after
+    /// Dispose on purpose: it records what happened rather than current state, and close_session has
+    /// no other way to learn the outcome.
+    /// </summary>
+    public bool SuspendedForTerminate
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _suspendedForTerminate;
             }
         }
     }
@@ -295,7 +314,7 @@ public class DebugSession : IDisposable
 
         try
         {
-            debugger.Start();
+            debugger.Start(_operationTimeout);
             McpLogger.LogDebugSessionEvent(_sessionId, "Started", _launchedProgram ?? string.Empty);
         }
         catch (Exception ex)
@@ -1262,9 +1281,11 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Detach from process
+    /// Detach from process. Returns false when a program this session launched could not be
+    /// suspended before the terminate, which is the one case where it may have outlived the
+    /// session; callers that report the outcome must not claim it was killed.
     /// </summary>
-    public void Detach()
+    public bool Detach()
     {
         lock (_stateLock)
         {
@@ -1272,21 +1293,21 @@ public class DebugSession : IDisposable
                 throw new ObjectDisposedException(nameof(DebugSession));
         }
 
-        DetachCore();
+        return DetachCore();
     }
 
     /// <summary>
     /// Tears the debugger down without the disposed guard, so it is safe to call from Dispose
     /// </summary>
-    private void DetachCore()
+    private bool DetachCore()
     {
         // Serialized against an in-flight resume of an ignored exception, which runs on its own
         // thread and would otherwise be talking to a debugger that is being disconnected
         lock (_teardownLock)
-            DetachCoreUnsynchronized();
+            return DetachCoreUnsynchronized();
     }
 
-    private void DetachCoreUnsynchronized()
+    private bool DetachCoreUnsynchronized()
     {
         DapDebugger? debuggerToRelease;
         bool weStartedIt;
@@ -1300,7 +1321,11 @@ public class DebugSession : IDisposable
                 _attachedProcessId = null;
                 _launchedProgram = null;
                 _phase = SessionPhase.Idle;
-                return;
+
+                // Nothing to tear down, so the last real teardown's outcome still stands. This is
+                // what makes Dispose after a failed Detach keep reporting the program as possibly
+                // alive rather than overwriting that with a vacuous success.
+                return _suspendedForTerminate;
             }
 
             debuggerToRelease = _debugger;
@@ -1325,6 +1350,12 @@ public class DebugSession : IDisposable
             ClearStopState();
         }
 
+        // Whether the terminate went out against a debuggee that was actually stopped. Nothing here
+        // can confirm the kill: SharpDbg swallows an unsynchronized terminate failure and reports
+        // success, and it never tells us the pid, so there is no process to look for afterwards. A
+        // pause that did not land is the only warning available that the program may have survived.
+        var suspendedForTerminate = true;
+
         // Release outside the lock to avoid potential deadlocks. Without Disconnect the debuggee is
         // never let go by ICorDebug and stays suspended for the rest of its life.
         try
@@ -1342,6 +1373,7 @@ public class DebugSession : IDisposable
                 catch (Exception ex)
                 {
                     McpLogger.LogDebugSessionError(_sessionId, "PauseBeforeTerminate", ex);
+                    suspendedForTerminate = false;
                 }
             }
 
@@ -1351,7 +1383,16 @@ public class DebugSession : IDisposable
         catch (Exception ex)
         {
             McpLogger.LogDebugSessionError(_sessionId, "Detach", ex);
+
+            // The disconnect itself failed, so a program we started was never asked to die
+            if (weStartedIt)
+                suspendedForTerminate = false;
         }
+
+        lock (_stateLock)
+            _suspendedForTerminate = suspendedForTerminate;
+
+        return suspendedForTerminate;
     }
 
     /// <summary>

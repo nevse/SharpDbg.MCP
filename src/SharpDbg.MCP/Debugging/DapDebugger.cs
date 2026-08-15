@@ -126,8 +126,42 @@ internal sealed class DapDebugger : IDisposable
     /// <summary>
     /// Starts the program prepared by <see cref="Launch"/>. The request returns once the process has
     /// been created and attached to, so a stop can already be on its way when it does.
+    /// This is the one request that creates a process, which is why it is also the one given a
+    /// timeout: a handler that never returns would otherwise hang start_program for good.
     /// </summary>
-    public void Start() => _host.SendRequestSync(new ConfigurationDoneRequest());
+    public void Start(TimeSpan timeout) =>
+        SendRequestWithTimeout(new ConfigurationDoneRequest(), timeout, "Starting the program");
+
+    /// <summary>
+    /// Sends a request and waits for it, giving up after <paramref name="timeout"/>.
+    /// <c>SendRequestSync</c> has no timeout of its own, so a stalled handler blocks its caller for
+    /// the life of the process.
+    /// Giving up stops us waiting; it does not stop the adapter. SharpDbg implements no cancel
+    /// handler, so the request runs on until the adapter itself is disposed - which is what tearing
+    /// the session down after this throws is for, and the only cleanup available.
+    /// </summary>
+    private void SendRequestWithTimeout<TArgs>(DebugRequest<TArgs> request, TimeSpan timeout, string what)
+        where TArgs : class, new()
+    {
+        // Same guard SendRequestSync applies: the reader thread delivers events and reads responses,
+        // so blocking it on a response would deadlock
+        _host.VerifySynchronousOperationAllowed();
+
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _host.SendRequest(
+            request,
+            _ => completed.TrySetResult(),
+            (_, ex) => completed.TrySetException(ex));
+
+        if (!completed.Task.Wait(timeout))
+            throw new TimeoutException(
+                $"{what} did not complete within {timeout.TotalSeconds:0.#}s. The debug adapter is "
+                + "still working on the request; the session has to be torn down to release it.");
+
+        // Rethrows a ProtocolException with its stack, the way SendRequestSync surfaces one
+        completed.Task.GetAwaiter().GetResult();
+    }
 
     private void Initialize() =>
         _host.SendRequestSync(new InitializeRequest

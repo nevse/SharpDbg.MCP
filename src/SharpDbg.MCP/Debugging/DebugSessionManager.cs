@@ -81,7 +81,11 @@ public class DebugSessionManager : IDisposable
     /// <summary>
     /// Close and remove a session
     /// </summary>
-    public void CloseSession(int sessionId)
+    /// <summary>
+    /// Closes a session. Returns false when a program it launched could not be suspended before the
+    /// terminate, which is the one case where it may have outlived the session.
+    /// </summary>
+    public bool CloseSession(int sessionId)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(DebugSessionManager));
@@ -99,6 +103,8 @@ public class DebugSessionManager : IDisposable
 
         // Dispose outside the lock to avoid potential deadlocks
         sessionToDispose?.Dispose();
+
+        return sessionToDispose?.SuspendedForTerminate ?? true;
     }
 
     /// <summary>
