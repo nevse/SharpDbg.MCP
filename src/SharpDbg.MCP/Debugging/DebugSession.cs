@@ -139,7 +139,7 @@ public class DebugSession : IDisposable
 
     /// <summary>
     /// The process being debugged, or null for a launched one: SharpDbg sends no process event, so
-    /// the pid of what it started is never reported to us. See defect 14 in the upstream notes.
+    /// the pid of what it started is never reported to us.
     /// </summary>
     public int? AttachedProcessId
     {
@@ -162,6 +162,21 @@ public class DebugSession : IDisposable
             lock (_stateLock)
             {
                 return _launchedProgram;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether the launched program was ever started. False only in Prepared, where the program is
+    /// described to the debugger and no process exists, so a teardown has nothing to kill.
+    /// </summary>
+    public bool HasStarted
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _phase != SessionPhase.Prepared;
             }
         }
     }
@@ -287,15 +302,11 @@ public class DebugSession : IDisposable
         {
             McpLogger.LogDebugSessionError(_sessionId, "Start", ex);
 
-            lock (_stateLock)
-            {
-                if (_phase == SessionPhase.Live)
-                {
-                    _phase = SessionPhase.Prepared;
-                    _isRunning = false;
-                }
-            }
-
+            // Tear down rather than rolling back to Prepared. configurationDone is what creates the
+            // process, so a failure here can leave one running, and the teardown reads the phase to
+            // decide whether to pause before terminating. Rolling back first tells it there is
+            // nothing to pause, and the terminate then fails against a running debuggee.
+            DetachCore();
             throw;
         }
     }

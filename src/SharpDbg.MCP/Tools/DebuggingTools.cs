@@ -420,6 +420,9 @@ public sealed class DebuggingTools
             var session = _sessionManager.Resolve(session_id);
             var processId = session.AttachedProcessId;
             var launchedProgram = session.LaunchedProgram;
+            // Read before the close, which resets the phase. A launched program that was never
+            // started has no process, so nothing is killed and saying so would be wrong.
+            var hasStarted = session.HasStarted;
 
             _sessionManager.CloseSession(session_id);
 
@@ -427,10 +430,11 @@ public sealed class DebuggingTools
             {
                 success = true,
                 session_id,
-                message = (processId, launchedProgram) switch
+                message = (processId, launchedProgram, hasStarted) switch
                 {
-                    (not null, _) => $"Session {session_id} closed and detached from process {processId.Value}",
-                    (_, not null) => $"Session {session_id} closed and {launchedProgram} killed",
+                    (not null, _, _) => $"Session {session_id} closed and detached from process {processId.Value}",
+                    (_, not null, true) => $"Session {session_id} closed and {launchedProgram} killed",
+                    (_, not null, false) => $"Session {session_id} closed, {launchedProgram} was never started",
                     _ => $"Session {session_id} closed"
                 }
             };
@@ -466,15 +470,21 @@ public sealed class DebuggingTools
 
             var processId = session.AttachedProcessId;
             var launchedProgram = session.LaunchedProgram;
+            // Read before the detach, which resets the phase. A launched program that was never
+            // started has no process, so nothing is killed and saying so would be wrong.
+            var hasStarted = session.HasStarted;
             session.Detach();
 
             var response = new
             {
                 success = true,
                 session_id = session.SessionId,
-                message = launchedProgram != null
-                    ? $"Killed {launchedProgram}"
-                    : $"Successfully detached from process {processId}"
+                message = (launchedProgram, hasStarted) switch
+                {
+                    (not null, true) => $"Killed {launchedProgram}",
+                    (not null, false) => $"Discarded {launchedProgram}, which was never started",
+                    _ => $"Successfully detached from process {processId}"
+                }
             };
 
             return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
