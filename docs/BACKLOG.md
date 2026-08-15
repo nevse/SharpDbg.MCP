@@ -7,19 +7,21 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 Defects in SharpDbg and one in the .NET debugger shim limit what this server can do.
 
-Short version, on SharpDbg 0.1.12: exception stops cannot be filtered by type or handled-ness, a
-launched program reports neither its process id nor its exit code, and the test suite is occasionally
-killed by a crash inside `libmscordbi` during attach - the last is a .NET runtime bug rather than a
-SharpDbg one. Stepping into code without symbols and hits on a just-replaced breakpoint used to belong
-here; both are fixed upstream.
+Short version, on SharpDbg 0.1.13: exception stops cannot be filtered by type or handled-ness, a
+launched program reports no exit code, and the test suite is occasionally killed by a crash inside
+`libmscordbi` during attach - the last is a .NET runtime bug rather than a SharpDbg one. Stepping into
+code without symbols, hits on a just-replaced breakpoint, and terminating a running debuggee all used
+to belong here; all three are fixed upstream.
 
-Terminating a *running* debuggee fails inside ICorDebug and reports success anyway, which would leak
-every program we launch. Closing a session pauses first, which makes the terminate land, so this one
-costs us a workaround rather than a limitation.
+A launched program's process id is fixed upstream too, as a DAP `process` event, but is **not yet
+released**. When it ships, `start_program` can report the pid instead of saying the debugger never
+says what it started.
 
-The recovery half of the replaced-breakpoint freeze went upstream as
-[#27](https://github.com/MattParkerDev/sharpdbg/pull/27) and landed in 0.1.10; the throw in
-`HandleBreakpoint` itself as [#37](https://github.com/MattParkerDev/sharpdbg/pull/37).
+The replaced-breakpoint freeze went upstream in two halves: the recovery as
+[#27](https://github.com/MattParkerDev/sharpdbg/pull/27), which landed in 0.1.10, and the throw in
+`HandleBreakpoint` as [#37](https://github.com/MattParkerDev/sharpdbg/pull/37), merged and released in
+0.1.13. Terminating a running debuggee went up as
+[#38](https://github.com/MattParkerDev/sharpdbg/issues/38) and is fixed in 0.1.13.
 
 ### `pause_execution` can wait forever on a stalled adapter
 `DebugSession.Pause` passes an infinite timeout on purpose: nothing raises a stop event for a pause,
@@ -44,6 +46,30 @@ Now possible: reading an exception's message, type, HResult, source and stack tr
 function evaluations in the target, which was ruinous while an evaluation left the debuggee unable to
 resume and is merely slow now. The stop still does not say the exception's type, so this is the only
 way to learn it.
+**Effort: S**
+
+## Cleanup the 0.1.13 bump makes possible
+
+Neither blocks anyone debugging. Both are workarounds for defects that no longer exist, and a
+workaround nobody removes is how a codebase ends up describing a debugger that is two versions old.
+
+### Drop the pause before terminate, if it is really redundant
+0.1.13 synchronizes the process inside `Terminate` itself, which is what our own pause in
+`DebugSession.DetachCoreUnsynchronized` exists to do. The suite cannot settle whether ours can go:
+`Launch_Detach_KillsTheProgramItStarted` passes either way, because both make the terminate land. The
+measurement is to disable the pause and run that test. If it can go, so can the "up to three times
+that" arithmetic in the README and a paragraph of `launch_program`'s description.
+
+Dropping it changes nothing about what we can *report* - the terminate failure is still swallowed
+upstream, so `program_may_be_running` goes on describing what we did rather than what happened.
+**Effort: S**
+
+### Remove the inconclusive path for the replaced-breakpoint freeze
+`RemoveBreakpoint_LeavesTheOtherBreakpointsInTheFileArmed` reports inconclusive rather than failing
+when the debuggee is left suspended with no stop, because that was an upstream race. The throw behind
+it is gone in 0.1.13, so the branch is dead weight and hides a real failure if one ever appears. The
+reason to remove it is that the throw no longer exists, not that the suite is green - it is a race,
+so a green run was never evidence either way.
 **Effort: S**
 
 ## P3 — distribution
