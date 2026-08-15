@@ -1303,9 +1303,9 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Detach from process. Returns false when a program this session launched could not be
-    /// suspended before the terminate, which is the one case where it may have outlived the
-    /// session; callers that report the outcome must not claim it was killed.
+    /// Detach from process. Returns false when the teardown did not land, leaving the debuggee's
+    /// fate unknown: a launched program may still be running, an attached one may still be
+    /// suspended. Callers that report the outcome must not claim either was released.
     /// </summary>
     public bool Detach()
     {

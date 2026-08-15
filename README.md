@@ -287,7 +287,9 @@ Close a session, detaching from its process if it is still attached.
 - `session_id` (int): ID from `attach_to_process` or `list_sessions`
 
 **Returns:** Success/error response, with `program_may_be_running` set when the debugger never
-confirmed terminating a launched program, so it may have survived the session.
+confirmed terminating a launched program, so it may have survived the session. An attached process the
+debugger never confirmed releasing is reported in the message instead — the flag covers launched
+programs only.
 
 #### `list_dotnet_processes`
 List all .NET processes currently running on the system.
@@ -348,8 +350,8 @@ what it started.
 The request itself is bounded by `SHARPDBG_OPERATION_TIMEOUT_SECONDS`, but the call as a whole can
 take up to three times that: on expiry the session is torn down, and the pause and disconnect that
 teardown sends are each bounded by the same value again. This is the call that creates the process,
-so an expiry leaves nothing half-started — begin again from `launch_program` rather than retrying
-`start_program`.
+so an expiry tears the session down rather than leaving it half-started — begin again from
+`launch_program` rather than retrying `start_program`.
 
 #### `get_program_output`
 Read what the debuggee has written to stdout and stderr, oldest line first.
@@ -371,12 +373,16 @@ because the debugger does not report the process it started.
 
 #### `detach_from_process`
 Detach the debugger from the current process, leaving that process running. A program the session
-launched is killed instead — it exists only for that session.
+launched is killed instead — it exists only for that session. Neither outcome is always confirmed: the
+message says so when the debugger did not answer, and an attached process that was not released stays
+suspended by ICorDebug rather than running on.
 
 **Parameters:** None
 
-**Returns:** Success/error response, with `program_may_be_running` set when a launched program could
-not be suspended and so may have survived the terminate.
+**Returns:** Success/error response, with `program_may_be_running` set when the debugger never
+confirmed terminating a launched program, so it may have survived the detach. An attached process the
+debugger never confirmed releasing is reported in the message instead — the flag covers launched
+programs only.
 
 #### `wait_for_stop`
 Wait for the debuggee to stop, instead of calling `get_process_status` in a loop.

@@ -527,13 +527,19 @@ public sealed class DebugSessionIntegrationTests
         WaitForStop(session);
         Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow));
 
-        session.Detach();
+        var released = session.Detach();
 
         Assert.IsFalse(session.IsAttached);
         Assert.IsGreaterThan(
             0,
             debuggee.CountOutputDuring(ObservationWindow),
             "Debuggee stayed suspended after detach");
+
+        // The attached half of what detach_from_process reports. Like its launched counterpart in
+        // LaunchIntegrationTests, the value is reported rather than observed, so the assertion above
+        // - which proves the disconnect landed - is what gives this one its expected value.
+        Assert.IsTrue(released,
+            "Detach reported the process as possibly still suspended, but it resumed");
     }
 
     /// <summary>

@@ -139,7 +139,8 @@ internal sealed class DapDebugger : IDisposable
     /// Giving up stops us waiting; it does not stop the adapter. SharpDbg implements no cancel
     /// handler, and it serializes every request behind one lock, so a stalled handler also holds off
     /// the pause and disconnect a teardown would send. Disposing the adapter is the only step that
-    /// does not need that lock, which is why every caller here has to be able to reach it.
+    /// does not need that lock, which is why a caller on the teardown path has to be able to reach
+    /// it. A caller that is not on that path may pass an infinite timeout and wait.
     /// </summary>
     private void SendRequestWithTimeout<TArgs>(DebugRequest<TArgs> request, TimeSpan timeout, string what)
         where TArgs : class, new()
@@ -263,8 +264,10 @@ internal sealed class DapDebugger : IDisposable
     public void Continue(int threadId) => _host.SendRequestSync(new ContinueRequest { ThreadId = threadId });
 
     /// <summary>
-    /// Suspends the debuggee. Bounded because a teardown pauses before terminating, and a pause that
-    /// never returns would leave the teardown unable to reach the adapter's Dispose.
+    /// Suspends the debuggee. The bound is the caller's to choose, and the two callers choose
+    /// opposite things: the teardown times its pause, because one that never returns would leave it
+    /// unable to reach the adapter's Dispose, while the caller-facing pause waits indefinitely on
+    /// purpose - see the comment on DebugSession.Pause for why a bound there would lie about state.
     /// </summary>
     public void Pause(int threadId, TimeSpan timeout) =>
         SendRequestWithTimeout(new PauseRequest { ThreadId = threadId }, timeout, "Pausing the program");
@@ -276,9 +279,9 @@ internal sealed class DapDebugger : IDisposable
     public void StepOut(int threadId) => _host.SendRequestSync(new StepOutRequest { ThreadId = threadId });
 
     /// <summary>
-    /// Releases the debuggee, terminating it when this session started it. Bounded for the same
-    /// reason as <see cref="Pause"/>: it runs on the teardown path, where blocking forever costs the
-    /// adapter's Dispose and every later operation on the session.
+    /// Releases the debuggee, terminating it when this session started it. Its only caller is the
+    /// teardown, which times it for the reason given on <see cref="Pause"/>: blocking forever there
+    /// costs the adapter's Dispose and every later operation on the session.
     /// </summary>
     public void Disconnect(bool terminateDebuggee, TimeSpan timeout) =>
         SendRequestWithTimeout(

@@ -21,6 +21,24 @@ The recovery half of the replaced-breakpoint freeze went upstream as
 [#27](https://github.com/MattParkerDev/sharpdbg/pull/27) and landed in 0.1.10; the throw in
 `HandleBreakpoint` itself as [#37](https://github.com/MattParkerDev/sharpdbg/pull/37).
 
+### `pause_execution` can wait forever on a stalled adapter
+`DebugSession.Pause` passes an infinite timeout on purpose: nothing raises a stop event for a pause,
+so the line after the request is the only record that the program stopped, and a timeout would skip
+it while the pause still landed — leaving the session insisting the program runs while it stands
+still. That is a silent lie on a common path, traded for a hang on a rare one.
+
+The hang is narrower than it looks. When the debuggee is actually running, `StoppedThreadOrFirst`
+falls through to `GetThreads`, itself an unbounded request, before the pause is even sent — so the
+bound never covered the ordinary case. It covered one state: already stopped, `_lastStoppedThreadId`
+retained, adapter wedged, reachable in practice only via `evaluate_expression`. Six sibling
+operations hang identically in that state, so pause is not the outlier.
+
+Worth doing only as the shape `start_program` already uses: bound the request and tear the session
+down on expiry, so no reusable state survives a pause that may still land. Recording a genuinely
+unknown state instead would reach `ExecutionState`, `get_process_status`, `wait_for_stop` and the
+README, which is out of proportion to this window.
+**Effort: M**
+
 ### Consider a `get_exception_info` tool
 Now possible: reading an exception's message, type, HResult, source and stack trace costs four
 function evaluations in the target, which was ruinous while an evaluation left the debuggee unable to
