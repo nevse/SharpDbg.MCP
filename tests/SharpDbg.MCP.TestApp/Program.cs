@@ -9,6 +9,11 @@ internal static class Program
 {
     private static void Main(string[] args)
     {
+        // Named so a test can tell a managed thread name from the id SharpDbg used to report in its
+        // place. Naming the thread we already have keeps the thread list the same shape. The tests
+        // are not linked against this assembly, so the name is repeated in TestPaths.
+        Thread.CurrentThread.Name = "debuggee-main";
+
         // Off by default, so tests that are not about exceptions are not disturbed by them
         var throwEachIteration = args.Contains("--throw");
 

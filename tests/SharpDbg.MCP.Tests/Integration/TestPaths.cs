@@ -8,6 +8,12 @@ internal static class TestPaths
 {
     private const string TestAppName = "SharpDbg.MCP.TestApp";
 
+    /// <summary>
+    /// The name the debuggee gives its main thread. Repeated rather than shared, because the test
+    /// app is not linked here - if this stops matching Program.cs, the thread name test says so.
+    /// </summary>
+    public const string DebuggeeMainThreadName = "debuggee-main";
+
     private static readonly Lazy<string> _repositoryRoot = new(FindRepositoryRoot);
 
     public static string TestAppAssembly => Path.Combine(

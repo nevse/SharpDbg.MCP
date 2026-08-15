@@ -90,6 +90,38 @@ public sealed class DebugSessionIntegrationTests
         Assert.AreEqual(int.Parse(current.Value) + 100, int.Parse(evaluation.Result));
     }
 
+    /// <summary>
+    /// SharpDbg named every thread after its own id up to 0.1.12, so the name told a caller nothing
+    /// the id had not already. Reported as sharpdbg#40 and fixed in 0.1.13. Nothing here changed for
+    /// it - DapDebugger always forwarded the name - which is why the suite would have missed both the
+    /// defect and the fix without this.
+    /// </summary>
+    [TestMethod]
+    public async Task GetThreads_ReportsTheManagedThreadName()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        var state = WaitForStop(session);
+
+        var threads = session.GetThreads();
+
+        // Listed on failure because the defect's shape was a name that is really an id, and reading
+        // the list is the fastest way to tell that from the debuggee simply not naming its thread
+        var main = threads.SingleOrDefault(t => t.Name == TestPaths.DebuggeeMainThreadName);
+        Assert.IsNotNull(
+            main,
+            $"No thread came back named '{TestPaths.DebuggeeMainThreadName}': "
+            + string.Join(", ", threads.Select(t => $"[{t.Id}] '{t.Name}'")));
+
+        // The breakpoint is in Work, which only the main thread reaches
+        Assert.AreEqual(main.Id, state.StoppedThreadId);
+    }
+
     [TestMethod]
     public async Task StepOver_FromBreakpoint_MovesToNextLineAndStopsAgain()
     {
