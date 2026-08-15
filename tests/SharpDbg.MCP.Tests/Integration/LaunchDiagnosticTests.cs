@@ -7,19 +7,26 @@ using SharpDbg.MCP.Debugging;
 namespace SharpDbg.MCP.Tests.Integration;
 
 /// <summary>
-/// TEMPORARY. Not a test of behaviour - a probe for why the second launch in a test host hangs on
-/// the macOS CI runner while the first succeeds, and while everything passes on Linux, on Windows,
-/// and locally on macOS including on the runner's exact SDK and runtime.
+/// TEMPORARY. Not a test of behaviour - a probe for why launching hangs on the macOS CI runner while
+/// Linux, Windows and macOS locally are all green, including on the runner's exact SDK and runtime.
+///
+/// The first version of this probe disproved the reading the CI log invites. Two launches of the
+/// assembly succeed on the runner, so it is not "the first works and the rest hang". Ordering the
+/// failures by what they launch points at the apphost instead: it is the first to fail, and every
+/// launch after it fails too.
 ///
 /// The hang is inside ClrDebugExtensions.Automatic, between "Process created suspended" and the
 /// attach: either DiagnosticClientResumeRuntime never returns, or the runtime-startup callback never
-/// fires. Both are launch-only, which is why attach is unaffected. This cannot be logged from here,
-/// so it reads the state of the world instead, which separates the two:
+/// fires. Both are launch-only, which is why attach is unaffected. That is upstream code this
+/// repository cannot log inside, so the probe reads the state of the world instead:
 ///
 ///   debuggee alive and stopped, no diagnostic socket -> the runtime never opened its port, so the
 ///                                                       resume had nothing to talk to
 ///   debuggee alive and a socket present              -> the resume landed and the callback is lost
 ///   debuggee gone                                    -> it died on startup
+///
+/// It ends in Assert.Fail on purpose: the runner's console logger prints a test's captured output
+/// only when it fails, and stderr is the stream that survives.
 ///
 /// Delete this file once the cause is known.
 /// </summary>
@@ -28,40 +35,64 @@ namespace SharpDbg.MCP.Tests.Integration;
 [TestCategory("Integration")]
 public sealed class LaunchDiagnosticTests
 {
+    /// <summary>
+    /// The first probe disproved the obvious reading of the CI log. Two launches of the assembly
+    /// succeed on the runner, so it is not "the first works and the rest hang". What the ordering
+    /// actually shows is that the apphost launch is the first to fail and everything after it fails
+    /// too, so this runs assembly, apphost, assembly and reports each.
+    /// </summary>
     [TestMethod]
-    public async Task Diagnostic_TwoLaunchesInOneHost()
+    public void Diagnostic_AssemblyThenApphostThenAssembly()
     {
         Report("before any launch");
 
-        for (var attempt = 1; attempt <= 2; attempt++)
+        Launch("assembly (baseline)", TestPaths.TestAppAssembly);
+        Launch("apphost (suspect)", TestPaths.TestAppExecutable);
+        Launch("assembly again (poisoned?)", TestPaths.TestAppAssembly);
+
+        Report("after all three");
+
+        Assert.Fail("Probe, not a test - read the PROBE lines above");
+    }
+
+    private static void Log(string message) => Console.Error.WriteLine($"PROBE {message}");
+
+    private static void Launch(string what, string program)
+    {
+        Log($"=== launching {what}: {program}");
+        Log($"  exists={File.Exists(program)}");
+
+        if (!OperatingSystem.IsWindows() && File.Exists(program))
+            Log($"  ls: {RunAndCapture("ls", $"-l@ {program}").Trim()}");
+
+        try
         {
             using var session = new DebugSession(1, new ServerConfiguration());
-            await session.Launch(TestPaths.TestAppAssembly);
+            session.Launch(program).GetAwaiter().GetResult();
 
             var stopwatch = Stopwatch.StartNew();
             try
             {
                 session.Start();
-                Console.WriteLine($"PROBE launch {attempt}: started in {stopwatch.ElapsedMilliseconds}ms");
+                Log($"  STARTED in {stopwatch.ElapsedMilliseconds}ms");
+                Report($"after {what} started");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"PROBE launch {attempt}: FAILED after {stopwatch.ElapsedMilliseconds}ms");
-                Console.WriteLine($"PROBE   {ex.GetType().Name}: {ex.Message}");
-                Report($"at the hang of launch {attempt}");
-                throw;
+                Log($"  FAILED after {stopwatch.ElapsedMilliseconds}ms: {ex.GetType().Name}: {ex.Message}");
+                Report($"at the hang of {what}");
             }
-
-            Report($"after launch {attempt} started");
         }
-
-        Report("after both sessions were disposed");
+        catch (Exception ex)
+        {
+            Log($"  session error: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private static void Report(string when)
     {
-        Console.WriteLine($"PROBE --- {when} ---");
-        Console.WriteLine($"PROBE TMPDIR={Environment.GetEnvironmentVariable("TMPDIR") ?? "<unset>"}");
+        Log($" --- {when} ---");
+        Log($" TMPDIR={Environment.GetEnvironmentVariable("TMPDIR") ?? "<unset>"}");
 
         ReportDebuggees();
         ReportDiagnosticSockets();
@@ -86,12 +117,12 @@ public sealed class LaunchDiagnosticTests
             if (!state.Contains("TestApp", StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            Console.WriteLine($"PROBE debuggee: {state.Trim()}");
+            Log($" debuggee: {state.Trim()}");
             found++;
         }
 
         if (found == 0)
-            Console.WriteLine("PROBE debuggee: none alive");
+            Log(" debuggee: none alive");
     }
 
     private static void ReportDiagnosticSockets()
@@ -101,15 +132,15 @@ public sealed class LaunchDiagnosticTests
         try
         {
             var sockets = Directory.GetFiles(directory, "dotnet-diagnostic-*");
-            Console.WriteLine($"PROBE diagnostic sockets in TMPDIR: {sockets.Length}");
+            Log($" diagnostic sockets in TMPDIR: {sockets.Length}");
 
             // Only the newest few matter; a runner accumulates them across the suite
             foreach (var socket in sockets.OrderByDescending(File.GetLastWriteTimeUtc).Take(5))
-                Console.WriteLine($"PROBE   {Path.GetFileName(socket)} {File.GetLastWriteTimeUtc(socket):HH:mm:ss}");
+                Log($"   {Path.GetFileName(socket)} {File.GetLastWriteTimeUtc(socket):HH:mm:ss}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"PROBE diagnostic sockets: could not list - {ex.Message}");
+            Log($" diagnostic sockets: could not list - {ex.Message}");
         }
     }
 
