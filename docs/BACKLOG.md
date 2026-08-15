@@ -48,20 +48,6 @@ resume and is merely slow now. The stop still does not say the exception's type,
 way to learn it.
 **Effort: S**
 
-## Cleanup the 0.1.13 bump makes possible
-
-Workarounds for defects that no longer exist. A workaround nobody removes is how a codebase ends up
-describing a debugger that is two versions old. The pause before terminate is done; what is below is
-what is left.
-
-### Remove the inconclusive path for the replaced-breakpoint freeze
-`RemoveBreakpoint_LeavesTheOtherBreakpointsInTheFileArmed` reports inconclusive rather than failing
-when the debuggee is left suspended with no stop, because that was an upstream race. The throw behind
-it is gone in 0.1.13, so the branch is dead weight and hides a real failure if one ever appears. The
-reason to remove it is that the throw no longer exists, not that the suite is green - it is a race,
-so a green run was never evidence either way.
-**Effort: S**
-
 ## P3 — distribution
 
 ### Ship on NuGet and run via `dnx`

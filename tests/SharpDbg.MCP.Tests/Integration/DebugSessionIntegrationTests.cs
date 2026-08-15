@@ -229,9 +229,9 @@ public sealed class DebugSessionIntegrationTests
         var a = session.SetBreakpoint(TestPaths.TestAppSource, first);
 
         // The rest is done while the debuggee is stopped. Adding or removing a breakpoint re-sends the
-        // file's whole set, and doing that while a hit on one of them is in flight trips an upstream
-        // defect that leaves the process suspended with nothing reported.
-        // This test is about removal leaving the others armed, so it stays out of that race.
+        // file's whole set, and a hit in flight while that happens used to freeze the process - fixed
+        // in SharpDbg 0.1.13, which continues instead of throwing. The race is still a race, and its
+        // timing decides nothing this test is about, so it stays out of it.
         WaitForStop(session);
 
         session.SetBreakpoint(TestPaths.TestAppSource, second);
@@ -248,13 +248,12 @@ public sealed class DebugSessionIntegrationTests
 
         if (!DebuggeeProcess.SpinUntil(() => !session.GetExecutionState().IsRunning, StopTimeout))
         {
-            // No stop and no output means the debuggee is suspended with nothing reported, which is
-            // the upstream defect above rather than anything this test can assert on. Saying so beats
-            // a red run for someone else's race, and beats pretending the run proved something.
-            if (debuggee.CountOutputDuring(ObservationWindow) == 0)
-                Assert.Inconclusive("The debuggee is suspended with no stop reported - a known debugger defect");
-
-            Assert.Fail("The surviving breakpoint never fired, and the debuggee is running");
+            // Both are failures now. Which one it is still decides where to look: a debuggee
+            // producing nothing is suspended with no stop reported, and one still printing simply
+            // never hit the breakpoint that survived the removal.
+            Assert.Fail(debuggee.CountOutputDuring(ObservationWindow) == 0
+                ? "The debuggee is suspended with no stop reported"
+                : "The surviving breakpoint never fired, and the debuggee is running");
         }
 
         Assert.AreEqual($"{TestPaths.TestAppSource}:{second}", session.GetExecutionState().CurrentLocation);
