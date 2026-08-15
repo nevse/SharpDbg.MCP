@@ -50,19 +50,9 @@ way to learn it.
 
 ## Cleanup the 0.1.13 bump makes possible
 
-Neither blocks anyone debugging. Both are workarounds for defects that no longer exist, and a
-workaround nobody removes is how a codebase ends up describing a debugger that is two versions old.
-
-### Drop the pause before terminate, if it is really redundant
-0.1.13 synchronizes the process inside `Terminate` itself, which is what our own pause in
-`DebugSession.DetachCoreUnsynchronized` exists to do. The suite cannot settle whether ours can go:
-`Launch_Detach_KillsTheProgramItStarted` passes either way, because both make the terminate land. The
-measurement is to disable the pause and run that test. If it can go, so can the "up to three times
-that" arithmetic in the README and a paragraph of `launch_program`'s description.
-
-Dropping it changes nothing about what we can *report* - the terminate failure is still swallowed
-upstream, so `program_may_be_running` goes on describing what we did rather than what happened.
-**Effort: S**
+Workarounds for defects that no longer exist. A workaround nobody removes is how a codebase ends up
+describing a debugger that is two versions old. The pause before terminate is done; what is below is
+what is left.
 
 ### Remove the inconclusive path for the replaced-breakpoint freeze
 `RemoveBreakpoint_LeavesTheOtherBreakpointsInTheFileArmed` reports inconclusive rather than failing

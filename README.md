@@ -333,10 +333,10 @@ is the only way to debug what a program does at startup.
 `start_program` once the breakpoints are set.
 
 The program's output is captured rather than printed — read it with `get_program_output`. A program
-launched this way belongs to its session: `detach_from_process` and `close_session` kill it. The kill
-needs the program suspended first, and both report `program_may_be_running` when the debugger never
-confirmed the terminate, meaning the program may have survived the session. A `start_program` that
-fails or times out can leave one behind too, and says so in its error.
+launched this way belongs to its session: `detach_from_process` and `close_session` kill it. Both
+report `program_may_be_running` when the debugger never confirmed the terminate, meaning the program
+may have survived the session. A `start_program` that fails or times out can leave one behind too,
+and says so in its error.
 
 #### `start_program`
 Run the program prepared by `launch_program`.
@@ -348,10 +348,10 @@ returns; `wait_for_stop` is what catches that. The process ID is not reported �
 what it started.
 
 The request itself is bounded by `SHARPDBG_OPERATION_TIMEOUT_SECONDS`, but the call as a whole can
-take up to three times that: on expiry the session is torn down, and the pause and disconnect that
-teardown sends are each bounded by the same value again. This is the call that creates the process,
-so an expiry tears the session down rather than leaving it half-started — begin again from
-`launch_program` rather than retrying `start_program`.
+take up to twice that: on expiry the session is torn down, and the disconnect that teardown sends is
+bounded by the same value again. This is the call that creates the process, so an expiry tears the
+session down rather than leaving it half-started — begin again from `launch_program` rather than
+retrying `start_program`.
 
 #### `get_program_output`
 Read what the debuggee has written to stdout and stderr, oldest line first.

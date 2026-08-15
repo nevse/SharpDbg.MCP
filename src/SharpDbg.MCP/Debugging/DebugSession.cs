@@ -1333,8 +1333,6 @@ public class DebugSession : IDisposable
     {
         DapDebugger? debuggerToRelease;
         bool weStartedIt;
-        bool wasRunning;
-        int stoppedThreadId;
 
         lock (_stateLock)
         {
@@ -1352,8 +1350,6 @@ public class DebugSession : IDisposable
 
             debuggerToRelease = _debugger;
             weStartedIt = _launchedProgram != null;
-            wasRunning = _phase == SessionPhase.Live && _isRunning;
-            stoppedThreadId = _lastStoppedThreadId ?? 0;
 
             // Unsubscribe from events
             debuggerToRelease.OnStopped -= OnDebuggerStopped;
@@ -1372,52 +1368,37 @@ public class DebugSession : IDisposable
             ClearStopState();
         }
 
-        // Whether the terminate went out against a debuggee that was actually stopped. Nothing here
-        // can confirm the kill: SharpDbg swallows an unsynchronized terminate failure and reports
-        // success, and it never tells us the pid, so there is no process to look for afterwards. A
-        // pause that did not land is the only warning available that the program may have survived.
+        // Whether the disconnect that carries the terminate returned at all. Nothing here can confirm
+        // the kill: SharpDbg swallows a terminate failure and reports success, and it never tells us
+        // the pid, so there is no process to look for afterwards. A disconnect that threw or timed
+        // out is the only warning available that the program may have survived.
         var releasedCleanly = true;
 
         // Release outside the lock to avoid potential deadlocks. Without Disconnect the debuggee is
         // never let go by ICorDebug and stays suspended for the rest of its life.
         //
-        // Every step below is bounded and its failure contained, because Dispose is what has to run:
+        // The step below is bounded and its failure contained, because Dispose is what has to run:
         // SharpDbg serializes requests behind one lock, so a handler that hangs would otherwise take
-        // the pause and the disconnect with it, and disposing the adapter is the only release that
-        // does not go through that lock. An unbounded step here would also strand _teardownLock and
-        // with it every later operation on this session.
+        // the disconnect with it, and disposing the adapter is the only release that does not go
+        // through that lock. An unbounded step here would also strand _teardownLock and with it every
+        // later operation on this session.
         try
         {
-            // A program we started is ours to clean up, and terminating it needs it synchronized:
-            // ICorDebugProcess::Terminate fails with CORDBG_E_PROCESS_NOT_SYNCHRONIZED on a running
-            // debuggee, and the failure is swallowed, leaving the process alive behind a request
-            // that reported success. Pausing first is what makes the terminate land.
-            if (weStartedIt && wasRunning)
-            {
-                try
-                {
-                    debuggerToRelease.Pause(stoppedThreadId, _operationTimeout);
-                }
-                catch (Exception ex)
-                {
-                    McpLogger.LogDebugSessionError(_sessionId, "PauseBeforeTerminate", ex);
-                    releasedCleanly = false;
-                }
-            }
+            // A program we started is ours to clean up. Terminating a running debuggee needs it
+            // synchronized, and SharpDbg does that itself since 0.1.13 - Terminate stops the process
+            // before terminating it. Up to 0.1.12 it did not, and the failure was swallowed, so this
+            // paused first to make the terminate land. Measured on the way in: with the pause gone,
+            // 0.1.12 leaks the debuggee on 5 of 5 runs and 0.1.13 kills it on 5 of 5.
+            debuggerToRelease.Disconnect(terminateDebuggee: weStartedIt, _operationTimeout);
+        }
+        catch (Exception ex)
+        {
+            McpLogger.LogDebugSessionError(_sessionId, "Detach", ex);
 
-            try
-            {
-                debuggerToRelease.Disconnect(terminateDebuggee: weStartedIt, _operationTimeout);
-            }
-            catch (Exception ex)
-            {
-                McpLogger.LogDebugSessionError(_sessionId, "Detach", ex);
-
-                // Whichever kind of debuggee this was, the release did not land: a program we
-                // started was never asked to die, and a process we merely attached to was never let
-                // go by ICorDebug and stays suspended for the rest of its life.
-                releasedCleanly = false;
-            }
+            // Whichever kind of debuggee this was, the release did not land: a program we started
+            // was never asked to die, and a process we merely attached to was never let go by
+            // ICorDebug and stays suspended for the rest of its life.
+            releasedCleanly = false;
         }
         finally
         {

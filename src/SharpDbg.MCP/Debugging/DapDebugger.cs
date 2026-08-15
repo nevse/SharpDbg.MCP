@@ -126,8 +126,9 @@ internal sealed class DapDebugger : IDisposable
     /// <summary>
     /// Starts the program prepared by <see cref="Launch"/>. The request returns once the process has
     /// been created and attached to, so a stop can already be on its way when it does.
-    /// This is the one request that creates a process, which is why it is also the one given a
-    /// timeout: a handler that never returns would otherwise hang start_program for good.
+    /// This is the one request that creates a process, which is why it is timed: a handler that never
+    /// returns would otherwise hang start_program for good. <see cref="Disconnect"/> is timed too, so
+    /// that a start which expires can still tear its half-made session down.
     /// </summary>
     public void Start(TimeSpan timeout) =>
         SendRequestWithTimeout(new ConfigurationDoneRequest(), timeout, "Starting the program");
@@ -138,9 +139,9 @@ internal sealed class DapDebugger : IDisposable
     /// the life of the process.
     /// Giving up stops us waiting; it does not stop the adapter. SharpDbg implements no cancel
     /// handler, and it serializes every request behind one lock, so a stalled handler also holds off
-    /// the pause and disconnect a teardown would send. Disposing the adapter is the only step that
-    /// does not need that lock, which is why a caller on the teardown path has to be able to reach
-    /// it. A caller that is not on that path may pass an infinite timeout and wait.
+    /// the disconnect a teardown would send. Disposing the adapter is the only step that does not
+    /// need that lock, which is why a caller on the teardown path has to be able to reach it. A
+    /// caller that is not on that path may pass an infinite timeout and wait.
     /// </summary>
     private void SendRequestWithTimeout<TArgs>(DebugRequest<TArgs> request, TimeSpan timeout, string what)
         where TArgs : class, new()
@@ -264,10 +265,11 @@ internal sealed class DapDebugger : IDisposable
     public void Continue(int threadId) => _host.SendRequestSync(new ContinueRequest { ThreadId = threadId });
 
     /// <summary>
-    /// Suspends the debuggee. The bound is the caller's to choose, and the two callers choose
-    /// opposite things: the teardown times its pause, because one that never returns would leave it
-    /// unable to reach the adapter's Dispose, while the caller-facing pause waits indefinitely on
-    /// purpose - see the comment on DebugSession.Pause for why a bound there would lie about state.
+    /// Suspends the debuggee. The bound is the caller's to choose, and the one caller left chooses
+    /// none: pause_execution waits indefinitely on purpose - see the comment on DebugSession.Pause
+    /// for why a bound there would lie about state. The teardown used to pass one, to make a
+    /// terminate land on a running debuggee; SharpDbg synchronizes inside Terminate since 0.1.13, so
+    /// it no longer pauses at all. The parameter stays for the backlog item that would bound this.
     /// </summary>
     public void Pause(int threadId, TimeSpan timeout) =>
         SendRequestWithTimeout(new PauseRequest { ThreadId = threadId }, timeout, "Pausing the program");
@@ -279,9 +281,10 @@ internal sealed class DapDebugger : IDisposable
     public void StepOut(int threadId) => _host.SendRequestSync(new StepOutRequest { ThreadId = threadId });
 
     /// <summary>
-    /// Releases the debuggee, terminating it when this session started it. Its only caller is the
-    /// teardown, which times it for the reason given on <see cref="Pause"/>: blocking forever there
-    /// costs the adapter's Dispose and every later operation on the session.
+    /// Releases the debuggee, terminating it when this session started it. Since 0.1.13 the terminate
+    /// synchronizes the process itself, so this is the whole teardown rather than its second half.
+    /// Its only caller is that teardown, which times it because blocking forever here costs the
+    /// adapter's Dispose and every later operation on the session.
     /// </summary>
     public void Disconnect(bool terminateDebuggee, TimeSpan timeout) =>
         SendRequestWithTimeout(
