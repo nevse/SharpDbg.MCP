@@ -108,6 +108,68 @@ public sealed class LaunchIntegrationTests
             + "the only place its output can be read");
     }
 
+    /// <summary>
+    /// get_program_output asks for at most max_lines of the most recent output, which is the
+    /// truncating branch of ReadOutput. Every other read in this suite asks for more than the
+    /// buffer holds and never reaches it, so returning the oldest lines instead of the newest
+    /// would leave the whole suite green while a caller watching a running program saw its first
+    /// lines forever.
+    /// </summary>
+    [TestMethod]
+    public async Task Launch_MoreOutputThanAskedFor_ReturnsTheNewestLines()
+    {
+        const int asked = 5;
+
+        using var session = CreateSession();
+
+        await session.Launch(TestPaths.TestAppAssembly);
+        session.Start();
+
+        // Two lines past the tail, not one: at exactly one the skip offset is 1, which a hard-coded
+        // Skip(1) satisfies as well as the real arithmetic does. Costs one extra tick.
+        var ticked = DebuggeeProcess.SpinUntil(
+            () => session.ReadOutput(int.MaxValue).Count > asked + 1,
+            StopTimeout);
+
+        Assert.IsTrue(ticked, $"The program never printed more than {asked + 1} lines");
+
+        // Suspend it, or it keeps printing across the reads below and there is no fixed tail to
+        // compare against. Pausing alone is not a barrier and waiting for a stop buys nothing:
+        // Pause sets the session not-running itself and raises no stop event, so the wait returns
+        // at once while what the program already wrote is still in flight through the adapter's
+        // stream callbacks. Bracket the tail read between two full reads and compare only when
+        // those match - that proves nothing landed in between, where waiting out a quiet interval
+        // would only make the race rarer.
+        session.Pause();
+
+        IReadOnlyList<OutputLine> all = [];
+        IReadOnlyList<OutputLine> newest = [];
+
+        var bracketed = DebuggeeProcess.SpinUntil(
+            () =>
+            {
+                var before = session.ReadOutput(int.MaxValue);
+                newest = session.ReadOutput(asked);
+                all = session.ReadOutput(int.MaxValue);
+
+                return before.SequenceEqual(all);
+            },
+            StopTimeout);
+
+        Assert.IsTrue(bracketed, "Output kept arriving across every attempt to read the buffer");
+
+        Assert.HasCount(asked, newest);
+        CollectionAssert.AreEqual(
+            all.TakeLast(asked).ToList(),
+            newest.ToList(),
+            "ReadOutput must return the tail of the buffer, not the head");
+
+        // The pid is printed once, before the ticks, so it is always the oldest line held. Seeing
+        // it here is what a Skip-for-Take swap looks like from the outside.
+        Assert.IsFalse(newest.Any(l => l.Text.StartsWith("PID=", StringComparison.Ordinal)),
+            "ReadOutput returned the oldest lines, not the newest");
+    }
+
     [TestMethod]
     public async Task Launch_Detach_KillsTheProgramItStarted()
     {
