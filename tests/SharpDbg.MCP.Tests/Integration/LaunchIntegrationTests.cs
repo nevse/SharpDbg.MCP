@@ -182,10 +182,17 @@ public sealed class LaunchIntegrationTests
 
         // Detaching while the program is running is the case that needs the pause: terminating a
         // running debuggee fails inside ICorDebug and the failure is not reported anywhere.
-        session.Detach();
+        // The return is what the tools turn into program_may_be_running, and it is reported rather
+        // than observed, so asserting the process died is not enough to pin it: this is the one
+        // place a real program is launched, started and killed, so it is where the two can be
+        // checked against each other.
+        var suspended = session.Detach();
 
         Assert.IsTrue(DebuggeeProcess.SpinUntil(() => !IsAlive(processId), TimeSpan.FromSeconds(15)),
             $"Process {processId} outlived the session that launched it");
+
+        Assert.IsTrue(suspended,
+            "Detach reported the program as possibly still running, but it was killed");
     }
 
     [TestMethod]

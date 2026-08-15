@@ -330,7 +330,9 @@ is the only way to debug what a program does at startup.
 `start_program` once the breakpoints are set.
 
 The program's output is captured rather than printed — read it with `get_program_output`. A program
-launched this way belongs to its session: `detach_from_process` and `close_session` kill it.
+launched this way belongs to its session: `detach_from_process` and `close_session` kill it. The kill
+needs the program suspended first, and both report `program_may_be_running` when it could not be —
+the one case where the program may have survived the session.
 
 #### `start_program`
 Run the program prepared by `launch_program`.
@@ -340,6 +342,10 @@ Run the program prepared by `launch_program`.
 **Returns:** Execution state after the start. The program may have hit a breakpoint before this
 returns; `wait_for_stop` is what catches that. The process ID is not reported — the debugger never says
 what it started.
+
+Bounded by `SHARPDBG_OPERATION_TIMEOUT_SECONDS`. This is the call that creates the process, so if it
+expires the session is torn down rather than left half-started: begin again from `launch_program`
+rather than retrying `start_program`.
 
 #### `get_program_output`
 Read what the debuggee has written to stdout and stderr, oldest line first.
@@ -365,7 +371,8 @@ launched is killed instead — it exists only for that session.
 
 **Parameters:** None
 
-**Returns:** Success/error response.
+**Returns:** Success/error response, with `program_may_be_running` set when a launched program could
+not be suspended and so may have survived the terminate.
 
 #### `wait_for_stop`
 Wait for the debuggee to stop, instead of calling `get_process_status` in a loop.

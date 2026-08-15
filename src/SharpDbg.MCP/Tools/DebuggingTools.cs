@@ -409,7 +409,9 @@ public sealed class DebuggingTools
 
     [McpServerTool, Description(
         "Close a debug session, detaching from its process if it is still attached. A program this " +
-        "session launched is killed. Use this to free a slot when SHARPDBG_MAX_SESSIONS has been " +
+        "session launched is killed, unless it could not be suspended first: program_may_be_running " +
+        "is true in that case and the program may have survived, so check it. Use this to free a " +
+        "slot when SHARPDBG_MAX_SESSIONS has been " +
         "reached.")]
     public string CloseSession(int session_id)
     {
@@ -454,7 +456,9 @@ public sealed class DebuggingTools
 
     [McpServerTool, Description(
         "Detach the debugger from a session's process, leaving that process running. A program the " +
-        "session launched is killed instead: it exists only for this session. The session stays " +
+        "session launched is killed instead: it exists only for this session. That kill needs the " +
+        "program suspended first, and program_may_be_running is true when it could not be, meaning " +
+        "the program may have survived - check it rather than assuming. The session stays " +
         "open and free, so the next attach_to_process or launch_program reuses it rather than " +
         "taking another slot; close_session removes it.")]
     public string DetachFromProcess(int? session_id = null)

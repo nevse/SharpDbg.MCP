@@ -137,8 +137,9 @@ internal sealed class DapDebugger : IDisposable
     /// <c>SendRequestSync</c> has no timeout of its own, so a stalled handler blocks its caller for
     /// the life of the process.
     /// Giving up stops us waiting; it does not stop the adapter. SharpDbg implements no cancel
-    /// handler, so the request runs on until the adapter itself is disposed - which is what tearing
-    /// the session down after this throws is for, and the only cleanup available.
+    /// handler, and it serializes every request behind one lock, so a stalled handler also holds off
+    /// the pause and disconnect a teardown would send. Disposing the adapter is the only step that
+    /// does not need that lock, which is why every caller here has to be able to reach it.
     /// </summary>
     private void SendRequestWithTimeout<TArgs>(DebugRequest<TArgs> request, TimeSpan timeout, string what)
         where TArgs : class, new()
@@ -154,12 +155,14 @@ internal sealed class DapDebugger : IDisposable
             _ => completed.TrySetResult(),
             (_, ex) => completed.TrySetException(ex));
 
-        if (!completed.Task.Wait(timeout))
+        // Waiting on the handle rather than on the task: Task.Wait throws the fault wrapped in an
+        // AggregateException, which would hide the ProtocolException the line below exists to
+        // rethrow with its own type and stack, the way SendRequestSync surfaces one.
+        if (!((IAsyncResult)completed.Task).AsyncWaitHandle.WaitOne(timeout))
             throw new TimeoutException(
                 $"{what} did not complete within {timeout.TotalSeconds:0.#}s. The debug adapter is "
-                + "still working on the request; the session has to be torn down to release it.");
+                + "still working on the request, and the session has been torn down to release it.");
 
-        // Rethrows a ProtocolException with its stack, the way SendRequestSync surfaces one
         completed.Task.GetAwaiter().GetResult();
     }
 
@@ -259,7 +262,12 @@ internal sealed class DapDebugger : IDisposable
 
     public void Continue(int threadId) => _host.SendRequestSync(new ContinueRequest { ThreadId = threadId });
 
-    public void Pause(int threadId) => _host.SendRequestSync(new PauseRequest { ThreadId = threadId });
+    /// <summary>
+    /// Suspends the debuggee. Bounded because a teardown pauses before terminating, and a pause that
+    /// never returns would leave the teardown unable to reach the adapter's Dispose.
+    /// </summary>
+    public void Pause(int threadId, TimeSpan timeout) =>
+        SendRequestWithTimeout(new PauseRequest { ThreadId = threadId }, timeout, "Pausing the program");
 
     public void StepOver(int threadId) => _host.SendRequestSync(new NextRequest { ThreadId = threadId });
 
@@ -267,8 +275,14 @@ internal sealed class DapDebugger : IDisposable
 
     public void StepOut(int threadId) => _host.SendRequestSync(new StepOutRequest { ThreadId = threadId });
 
-    public void Disconnect(bool terminateDebuggee) =>
-        _host.SendRequestSync(new DisconnectRequest { TerminateDebuggee = terminateDebuggee });
+    /// <summary>
+    /// Releases the debuggee, terminating it when this session started it. Bounded for the same
+    /// reason as <see cref="Pause"/>: it runs on the teardown path, where blocking forever costs the
+    /// adapter's Dispose and every later operation on the session.
+    /// </summary>
+    public void Disconnect(bool terminateDebuggee, TimeSpan timeout) =>
+        SendRequestWithTimeout(
+            new DisconnectRequest { TerminateDebuggee = terminateDebuggee }, timeout, "Disconnecting");
 
     private static List<AppliedBreakpoint> Map(List<MSBreakpoint>? breakpoints)
     {

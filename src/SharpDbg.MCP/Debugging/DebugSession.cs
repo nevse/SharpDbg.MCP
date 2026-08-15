@@ -321,12 +321,23 @@ public class DebugSession : IDisposable
         {
             McpLogger.LogDebugSessionError(_sessionId, "Start", ex);
 
+            // Read before the teardown, which clears it. This is the failure where a launched
+            // program is most likely to survive, and also the one whose session is gone by the time
+            // anything could be asked about it, so the warning has to travel with the exception.
+            string? program;
+
+            lock (_stateLock)
+                program = _launchedProgram;
+
             // Tear down rather than rolling back to Prepared. configurationDone is what creates the
             // process, so a failure here can leave one running, and the teardown reads the phase to
             // decide whether to pause before terminating. Rolling back first tells it there is
             // nothing to pause, and the terminate then fails against a running debuggee.
-            DetachCore();
-            throw;
+            if (DetachCore() || program == null)
+                throw;
+
+            throw new InvalidOperationException(
+                $"{ex.Message} {program} could not be suspended and may still be running.", ex);
         }
     }
 
@@ -1224,7 +1235,7 @@ public class DebugSession : IDisposable
         var debugger = RequireLiveDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "Pause", "Breaking execution");
-        debugger.Pause(StoppedThreadOrFirst(debugger));
+        debugger.Pause(StoppedThreadOrFirst(debugger), _operationTimeout);
 
         // Stop() is synchronous and raises no stop event of its own.
         lock (_stateLock)
@@ -1358,6 +1369,12 @@ public class DebugSession : IDisposable
 
         // Release outside the lock to avoid potential deadlocks. Without Disconnect the debuggee is
         // never let go by ICorDebug and stays suspended for the rest of its life.
+        //
+        // Every step below is bounded and its failure contained, because Dispose is what has to run:
+        // SharpDbg serializes requests behind one lock, so a handler that hangs would otherwise take
+        // the pause and the disconnect with it, and disposing the adapter is the only release that
+        // does not go through that lock. An unbounded step here would also strand _teardownLock and
+        // with it every later operation on this session.
         try
         {
             // A program we started is ours to clean up, and terminating it needs it synchronized:
@@ -1368,7 +1385,7 @@ public class DebugSession : IDisposable
             {
                 try
                 {
-                    debuggerToRelease.Pause(stoppedThreadId);
+                    debuggerToRelease.Pause(stoppedThreadId, _operationTimeout);
                 }
                 catch (Exception ex)
                 {
@@ -1377,16 +1394,29 @@ public class DebugSession : IDisposable
                 }
             }
 
-            debuggerToRelease.Disconnect(terminateDebuggee: weStartedIt);
-            debuggerToRelease.Dispose();
-        }
-        catch (Exception ex)
-        {
-            McpLogger.LogDebugSessionError(_sessionId, "Detach", ex);
+            try
+            {
+                debuggerToRelease.Disconnect(terminateDebuggee: weStartedIt, _operationTimeout);
+            }
+            catch (Exception ex)
+            {
+                McpLogger.LogDebugSessionError(_sessionId, "Detach", ex);
 
-            // The disconnect itself failed, so a program we started was never asked to die
-            if (weStartedIt)
-                suspendedForTerminate = false;
+                // A program we started was never asked to die, or was asked and we did not hear back
+                if (weStartedIt)
+                    suspendedForTerminate = false;
+            }
+        }
+        finally
+        {
+            try
+            {
+                debuggerToRelease.Dispose();
+            }
+            catch (Exception ex)
+            {
+                McpLogger.LogDebugSessionError(_sessionId, "ReleaseAdapter", ex);
+            }
         }
 
         lock (_stateLock)

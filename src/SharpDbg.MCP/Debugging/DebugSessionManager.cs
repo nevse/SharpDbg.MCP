@@ -79,11 +79,8 @@ public class DebugSessionManager : IDisposable
     }
 
     /// <summary>
-    /// Close and remove a session
-    /// </summary>
-    /// <summary>
-    /// Closes a session. Returns false when a program it launched could not be suspended before the
-    /// terminate, which is the one case where it may have outlived the session.
+    /// Closes and removes a session. Returns false when a program it launched could not be suspended
+    /// before the terminate, which is the one case where it may have outlived the session.
     /// </summary>
     public bool CloseSession(int sessionId)
     {
