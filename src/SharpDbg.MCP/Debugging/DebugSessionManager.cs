@@ -79,8 +79,9 @@ public class DebugSessionManager : IDisposable
     }
 
     /// <summary>
-    /// Closes and removes a session. Returns false when a program it launched could not be suspended
-    /// before the terminate, which is the one case where it may have outlived the session.
+    /// Closes and removes a session. Returns false when the teardown did not land, leaving the
+    /// debuggee's fate unknown: a launched program may still be running, an attached one may still
+    /// be suspended by the debugger.
     /// </summary>
     public bool CloseSession(int sessionId)
     {
@@ -101,7 +102,7 @@ public class DebugSessionManager : IDisposable
         // Dispose outside the lock to avoid potential deadlocks
         sessionToDispose?.Dispose();
 
-        return sessionToDispose?.SuspendedForTerminate ?? true;
+        return sessionToDispose?.ReleasedCleanly ?? true;
     }
 
     /// <summary>

@@ -133,7 +133,8 @@ public sealed class DebuggingTools
         "executes. Pass the built program - the .dll or the executable next to it - not a project " +
         "file. Then set breakpoints and call start_program to run it. The program's output is " +
         "captured rather than printed, and read with get_program_output. A program launched this " +
-        "way is killed when the session is detached or closed.")]
+        "way is killed when the session is detached or closed, though the debugger does not always " +
+        "confirm it - both report program_may_be_running when it did not.")]
     public string LaunchProgram(
         string program_path,
         string[]? args = null,
@@ -409,8 +410,8 @@ public sealed class DebuggingTools
 
     [McpServerTool, Description(
         "Close a debug session, detaching from its process if it is still attached. A program this " +
-        "session launched is killed, unless it could not be suspended first: program_may_be_running " +
-        "is true in that case and the program may have survived, so check it. Use this to free a " +
+        "session launched is killed, but the debugger does not always confirm it: program_may_be_running " +
+        "is true when it did not, and the program may have survived, so check it. Use this to free a " +
         "slot when SHARPDBG_MAX_SESSIONS has been " +
         "reached.")]
     public string CloseSession(int session_id)
@@ -426,21 +427,25 @@ public sealed class DebuggingTools
             // started has no process, so nothing is killed and saying so would be wrong.
             var hasStarted = session.HasStarted;
 
-            var suspended = _sessionManager.CloseSession(session_id);
+            var released = _sessionManager.CloseSession(session_id);
 
             var response = new
             {
                 success = true,
                 session_id,
-                // A launched program that could not be suspended may have survived the terminate,
-                // and nothing downstream can tell from the message alone
-                program_may_be_running = launchedProgram != null && hasStarted && !suspended,
-                message = (processId, launchedProgram, hasStarted, suspended) switch
+                // A launched program the teardown could not account for may have survived it, and
+                // nothing downstream can tell from the message alone
+                program_may_be_running = launchedProgram != null && hasStarted && !released,
+                message = (processId, launchedProgram, hasStarted, released) switch
                 {
-                    (not null, _, _, _) => $"Session {session_id} closed and detached from process {processId.Value}",
+                    (not null, _, _, true) => $"Session {session_id} closed and detached from process {processId.Value}",
+                    (not null, _, _, false) =>
+                        $"Session {session_id} closed, but the debugger never confirmed releasing process "
+                        + $"{processId.Value}, which may still be suspended",
                     (_, not null, true, true) => $"Session {session_id} closed and {launchedProgram} killed",
                     (_, not null, true, false) =>
-                        $"Session {session_id} closed, but {launchedProgram} could not be suspended and may still be running",
+                        $"Session {session_id} closed, but the debugger never confirmed terminating "
+                        + $"{launchedProgram}, which may still be running",
                     (_, not null, false, _) => $"Session {session_id} closed, {launchedProgram} was never started",
                     _ => $"Session {session_id} closed"
                 }
@@ -457,8 +462,8 @@ public sealed class DebuggingTools
     [McpServerTool, Description(
         "Detach the debugger from a session's process, leaving that process running. A program the " +
         "session launched is killed instead: it exists only for this session. That kill needs the " +
-        "program suspended first, and program_may_be_running is true when it could not be, meaning " +
-        "the program may have survived - check it rather than assuming. The session stays " +
+        "program suspended first, and program_may_be_running is true when the debugger never confirmed " +
+        "the terminate, meaning the program may have survived - check it rather than assuming. The session stays " +
         "open and free, so the next attach_to_process or launch_program reuses it rather than " +
         "taking another slot; close_session removes it.")]
     public string DetachFromProcess(int? session_id = null)
@@ -482,22 +487,23 @@ public sealed class DebuggingTools
             // Read before the detach, which resets the phase. A launched program that was never
             // started has no process, so nothing is killed and saying so would be wrong.
             var hasStarted = session.HasStarted;
-            var suspended = session.Detach();
+            var released = session.Detach();
 
             var response = new
             {
                 success = true,
                 session_id = session.SessionId,
-                // A launched program that could not be suspended may have survived the terminate,
-                // and nothing downstream can tell from the message alone
-                program_may_be_running = launchedProgram != null && hasStarted && !suspended,
-                message = (launchedProgram, hasStarted, suspended) switch
+                // A launched program the teardown could not account for may have survived it, and
+                // nothing downstream can tell from the message alone
+                program_may_be_running = launchedProgram != null && hasStarted && !released,
+                message = (launchedProgram, hasStarted, released) switch
                 {
                     (not null, true, true) => $"Killed {launchedProgram}",
                     (not null, true, false) =>
-                        $"{launchedProgram} could not be suspended and may still be running",
+                        $"The debugger never confirmed terminating {launchedProgram}, which may still be running",
                     (not null, false, _) => $"Discarded {launchedProgram}, which was never started",
-                    _ => $"Successfully detached from process {processId}"
+                    (null, _, true) => $"Successfully detached from process {processId}",
+                    _ => $"The debugger never confirmed releasing process {processId}, which may still be suspended"
                 }
             };
 

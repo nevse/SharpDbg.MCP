@@ -286,7 +286,8 @@ Close a session, detaching from its process if it is still attached.
 **Parameters:**
 - `session_id` (int): ID from `attach_to_process` or `list_sessions`
 
-**Returns:** Success/error response.
+**Returns:** Success/error response, with `program_may_be_running` set when the debugger never
+confirmed terminating a launched program, so it may have survived the session.
 
 #### `list_dotnet_processes`
 List all .NET processes currently running on the system.
@@ -331,8 +332,9 @@ is the only way to debug what a program does at startup.
 
 The program's output is captured rather than printed — read it with `get_program_output`. A program
 launched this way belongs to its session: `detach_from_process` and `close_session` kill it. The kill
-needs the program suspended first, and both report `program_may_be_running` when it could not be —
-the one case where the program may have survived the session.
+needs the program suspended first, and both report `program_may_be_running` when the debugger never
+confirmed the terminate, meaning the program may have survived the session. A `start_program` that
+fails or times out can leave one behind too, and says so in its error.
 
 #### `start_program`
 Run the program prepared by `launch_program`.
@@ -343,9 +345,11 @@ Run the program prepared by `launch_program`.
 returns; `wait_for_stop` is what catches that. The process ID is not reported — the debugger never says
 what it started.
 
-Bounded by `SHARPDBG_OPERATION_TIMEOUT_SECONDS`. This is the call that creates the process, so if it
-expires the session is torn down rather than left half-started: begin again from `launch_program`
-rather than retrying `start_program`.
+The request itself is bounded by `SHARPDBG_OPERATION_TIMEOUT_SECONDS`, but the call as a whole can
+take up to three times that: on expiry the session is torn down, and the pause and disconnect that
+teardown sends are each bounded by the same value again. This is the call that creates the process,
+so an expiry leaves nothing half-started — begin again from `launch_program` rather than retrying
+`start_program`.
 
 #### `get_program_output`
 Read what the debuggee has written to stdout and stderr, oldest line first.

@@ -161,7 +161,7 @@ internal sealed class DapDebugger : IDisposable
         if (!((IAsyncResult)completed.Task).AsyncWaitHandle.WaitOne(timeout))
             throw new TimeoutException(
                 $"{what} did not complete within {timeout.TotalSeconds:0.#}s. The debug adapter is "
-                + "still working on the request, and the session has been torn down to release it.");
+                + "still working on the request.");
 
         completed.Task.GetAwaiter().GetResult();
     }
