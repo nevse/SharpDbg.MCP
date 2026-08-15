@@ -1024,6 +1024,9 @@ The server is designed to work on:
 
 This project is under active development. Contributions are welcome!
 
+Cutting a release is documented separately in [docs/RELEASING.md](docs/RELEASING.md), including the
+nuget.org trusted-publishing policy, which is configuration the workflow depends on but does not show.
+
 ### Current Priorities
 
 1. Implement core debugging tools (breakpoints, stepping, variable inspection)

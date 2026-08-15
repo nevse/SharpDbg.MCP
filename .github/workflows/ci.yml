@@ -148,6 +148,12 @@ jobs:
     needs: [build-and-test, integration-tests]
     if: github.event_name == 'release'
 
+    # Naming any permission drops the defaults for this job, so contents has to be restated for the
+    # release upload below
+    permissions:
+      id-token: write   # let GitHub mint the OIDC token nuget.org trades for a short-lived key
+      contents: write   # attach the package to the release
+
     steps:
     - uses: actions/checkout@v7
 
@@ -189,10 +195,19 @@ jobs:
         -p:Version=${{ steps.version.outputs.value }}
         --output ./artifacts
 
+    # Trusted publishing: nuget.org validates the workflow's OIDC token against a policy naming this
+    # owner, repository and workflow file, then issues an API key that lives an hour. No long-lived
+    # secret is stored here. The key is requested immediately before the push on purpose.
+    - name: Exchange the OIDC token for a NuGet key
+      uses: NuGet/login@v1
+      id: nuget-login
+      with:
+        user: ${{ secrets.NUGET_USER }}
+
     - name: Push to NuGet.org
       run: >
         dotnet nuget push ./artifacts/*.nupkg
-        --api-key ${{ secrets.NUGET_API_KEY }}
+        --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         --source https://api.nuget.org/v3/index.json
         --skip-duplicate
 
