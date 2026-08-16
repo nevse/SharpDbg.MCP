@@ -64,7 +64,7 @@ jobs:
     # to check whether MattParkerDev/sharpdbg#44 is fixed. The poisoning only reproduces on this
     # runner, so it is the only place the answer can come from.
     - name: Clone SharpDbg with the resume bounded on top of his #44 fixes
-      run: git clone https://github.com/nevse/sharpdbg.git ../sharpdbg && git -C ../sharpdbg checkout 04fcd665dc9fe32f2cf5e54193ff95111af62933
+      run: git clone https://github.com/nevse/sharpdbg.git ../sharpdbg && git -C ../sharpdbg checkout fedd84d52214e3c7d9da36d8b1b6cde245b65dfd
 
     - name: Restore dependencies
       run: dotnet restore
@@ -75,6 +75,28 @@ jobs:
       run: dotnet build --no-restore --configuration Release
       env:
         SharpDbgSourcePath: ${{ github.workspace }}/../sharpdbg
+
+    # Compiling the clone's csproj does not prove the tests load what it produced. This does, and it
+    # fails the job rather than letting a stale build answer a question about a patch.
+    - name: Prove the tests run the clone's build, not the package
+      shell: bash
+      run: |
+        python3 - <<'PY'
+        import json, pathlib, sys
+        assets = json.loads(pathlib.Path("src/SharpDbg.MCP/obj/project.assets.json").read_text())
+        sharpdbg = {k: v["type"] for k, v in assets["libraries"].items() if k.lower().startswith("sharpdbg")}
+        print("SharpDbg entries:", sharpdbg)
+        if not sharpdbg or any(t != "project" for t in sharpdbg.values()):
+            sys.exit("The package is still in the graph - the source swap did not happen")
+        PY
+        built=$(find ../sharpdbg -name SharpDbg.Infrastructure.dll -path '*/bin/*' -o -name SharpDbg.Infrastructure.dll -path '*/artifacts/*' | head -1)
+        beside=tests/SharpDbg.MCP.Tests/bin/Release/net10.0/SharpDbg.Infrastructure.dll
+        echo "clone:  $built"
+        echo "tests:  $beside"
+        shasum "$built" "$beside" | awk '{print $1}' | uniq -c
+        test "$(shasum "$built" | cut -d' ' -f1)" = "$(shasum "$beside" | cut -d' ' -f1)" \
+          || { echo "The assembly beside the tests is not the one the clone built"; exit 1; }
+        echo "Confirmed: the tests run the clone's SharpDbg.Infrastructure"
 
     # The test host is killed by a segfault inside libmscordbi while it replays the events for an
     # attach in roughly a fifth of macOS runs, and the integration tests attach around thirty times
