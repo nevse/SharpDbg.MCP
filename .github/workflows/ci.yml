@@ -63,8 +63,8 @@ jobs:
     # TEMPORARY, for this branch only: build against a SharpDbg working tree rather than the package,
     # to check whether MattParkerDev/sharpdbg#44 is fixed. The poisoning only reproduces on this
     # runner, so it is the only place the answer can come from.
-    - name: Clone SharpDbg at the commits that should fix #44
-      run: git clone https://github.com/MattParkerDev/sharpdbg.git ../sharpdbg && git -C ../sharpdbg checkout 32e8805
+    - name: Clone SharpDbg with the resume bounded on top of his #44 fixes
+      run: git clone https://github.com/nevse/sharpdbg.git ../sharpdbg && git -C ../sharpdbg checkout 04fcd665dc9fe32f2cf5e54193ff95111af62933
 
     - name: Restore dependencies
       run: dotnet restore
