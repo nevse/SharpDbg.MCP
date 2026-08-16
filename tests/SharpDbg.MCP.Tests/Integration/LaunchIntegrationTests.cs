@@ -76,22 +76,11 @@ public sealed class LaunchIntegrationTests
     {
         var line = TestPaths.FindMarkerLine("STARTUP-TARGET");
 
-        // Launching an apphost hangs on GitHub's macOS runner and nowhere else - not on Linux, not on
-        // Windows, and not on macOS off the runner, where this is verified on every local run. The
-        // debuggee starts and opens its diagnostic port; the runtime-startup callback never arrives.
-        // Ruled out by measurement rather than argument: the runner's SDK and runtime, the test
-        // sequence, stale diagnostic sockets, its core count, its macOS version, and code signing -
-        // the runner is the more permissive machine, with SIP off and developer mode on, and its
-        // apphost is signed identically. See UPSTREAM.md defect 17.
-        //
-        // Skipped only on the runner, because that is the only place it fails and the local run is
-        // what keeps the capability covered. It is skipped rather than left red for the reason the
-        // one launch that fails poisons the rest: ClrDebugExtensions keeps its runtime-startup state
-        // in a static, so every later launch in the same test host hangs too, and four tests report
-        // a defect that belongs to one.
-        if (OperatingSystem.IsMacOS() && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
-            Assert.Inconclusive("Launching an apphost hangs on the macOS runner - UPSTREAM.md defect 17");
-
+        // This used to hang on GitHub's macOS runner and was skipped there. The cause was not in the
+        // debugger: macOS would not hand over the debuggee's task port because the apphost carried no
+        // com.apple.security.get-task-allow, and it refused by blocking, so task_for_pid never
+        // returned and DebugActiveProcess never came back. The test app is now re-signed with that
+        // entitlement at build time, which is why this runs everywhere again. UPSTREAM.md defect 17.
         Assert.IsTrue(File.Exists(TestPaths.TestAppExecutable),
             $"The test app's apphost must be built: {TestPaths.TestAppExecutable}");
 
@@ -103,6 +92,44 @@ public sealed class LaunchIntegrationTests
 
         var stopped = WaitForStop(session);
 
+        Assert.AreEqual("breakpoint", stopped.StopReason);
+        Assert.AreEqual($"{TestPaths.TestAppSource}:{line}", stopped.CurrentLocation);
+    }
+
+    /// <summary>
+    /// Attaching to an apphost, which is the one combination the suite never covered. Every other
+    /// attach test targets a debuggee started as `dotnet app.dll`, so "launching fails and attaching
+    /// works" has always been confounded with "the target is an apphost" against "the target is the
+    /// muxer". This separates them: the debuggee is an apphost and the debugger attaches to it
+    /// already running, so the launch path is not involved at all.
+    ///
+    /// That mattered: on the macOS runner an apphost debuggee hung the same way whether it was
+    /// launched or attached to, which is what proved the launch path innocent and put the cause in
+    /// the target's entitlements instead.
+    /// </summary>
+    [TestMethod]
+    public async Task Attach_ToAnAppHost_StopsAtTheBreakpoint()
+    {
+        Assert.IsTrue(File.Exists(TestPaths.TestAppExecutable),
+            $"The test app's apphost must be built: {TestPaths.TestAppExecutable}");
+
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.StartAppHost();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var breakpoint = session.SetBreakpoint(TestPaths.TestAppSource, line);
+        Assert.IsTrue(breakpoint.Verified, $"Breakpoint was not verified: {breakpoint.Message}");
+
+        // Not the WaitForStop above: that one also waits for Started, which start_program sets and an
+        // attach never does.
+        var reached = DebuggeeProcess.SpinUntil(() => !session.GetExecutionState().IsRunning, StopTimeout);
+        var stopped = session.GetExecutionState();
+
+        Assert.IsTrue(reached,
+            $"Never stopped. State: running={stopped.IsRunning}, reason={stopped.StopReason}");
         Assert.AreEqual("breakpoint", stopped.StopReason);
         Assert.AreEqual($"{TestPaths.TestAppSource}:{line}", stopped.CurrentLocation);
     }

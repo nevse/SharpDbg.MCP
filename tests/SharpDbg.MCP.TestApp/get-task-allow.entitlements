@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Lets a debugger take this process's task port. Without it macOS refuses, and refuses by
+       blocking rather than failing, so ICorDebug hangs instead of reporting anything. -->
+  <key>com.apple.security.get-task-allow</key>
+  <true/>
+</dict>
+</plist>
