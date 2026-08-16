@@ -38,6 +38,29 @@ internal sealed class DebuggeeProcess : IDisposable
         };
         startInfo.ArgumentList.Add(TestPaths.TestAppAssembly);
 
+        return StartCore(startInfo, arguments);
+    }
+
+    /// <summary>
+    /// Starts the same program through its apphost rather than the muxer. Which of the two a debuggee
+    /// runs as is a variable in its own right, because the operating system treats them differently:
+    /// the muxer is Developer ID signed and carries com.apple.security.get-task-allow, while the
+    /// apphost the SDK produces is ad-hoc signed with no entitlements at all.
+    /// </summary>
+    public static DebuggeeProcess StartAppHost(params string[] arguments)
+    {
+        var startInfo = new ProcessStartInfo(TestPaths.TestAppExecutable)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+
+        return StartCore(startInfo, arguments);
+    }
+
+    private static DebuggeeProcess StartCore(ProcessStartInfo startInfo, string[] arguments)
+    {
         foreach (var argument in arguments)
             startInfo.ArgumentList.Add(argument);
 

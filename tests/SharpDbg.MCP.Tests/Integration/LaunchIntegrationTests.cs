@@ -81,8 +81,14 @@ public sealed class LaunchIntegrationTests
         //
         // Located, by logging every step of the launch on the runner: ICorDebug::DebugActiveProcess
         // never returns. Everything before it does - the runtime-startup registration, the diagnostic
-        // resume, the startup callback. Attach reaches the same call and 28 attach tests pass in the
-        // run where four launches do not.
+        // resume, the startup callback.
+        //
+        // Attaching reaches the same call and passes, but that says nothing about launching: the
+        // debuggee is in a different state on the way in. dbgshim checks whether the transport pipe
+        // already exists (PAL_RuntimeStartupHelper::IsCoreClrProcessReady), and for an attach it does,
+        // so the whole runtime-startup handshake is skipped and there is something to connect to.
+        // A launch runs that handshake, and it is the handshake that decides whether the transport is
+        // ever created.
         //
         // Why it hangs there is unknown, and four explanations have been disproved by measurement
         // rather than argument, along with the runner's SDK and runtime, the test sequence, stale
@@ -92,8 +98,11 @@ public sealed class LaunchIntegrationTests
         // Skipped only on the runner, because that is the only place it fails and the local run is
         // what keeps the capability covered. Skipping this one test is enough because the first
         // failed launch takes every later one with it, so the other four failures were its
-        // consequence rather than four defects.
-        if (OperatingSystem.IsMacOS() && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
+        // consequence rather than four defects. SHARPDBG_PROBE_MACOS_LAUNCH=1 lifts the skip so the
+        // probe workflow can let it hang on purpose and photograph it.
+        if (OperatingSystem.IsMacOS()
+            && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true"
+            && Environment.GetEnvironmentVariable("SHARPDBG_PROBE_MACOS_LAUNCH") != "1")
             Assert.Inconclusive("Launching an apphost hangs on the macOS runner - UPSTREAM.md defect 17");
 
         Assert.IsTrue(File.Exists(TestPaths.TestAppExecutable),
@@ -107,6 +116,50 @@ public sealed class LaunchIntegrationTests
 
         var stopped = WaitForStop(session);
 
+        Assert.AreEqual("breakpoint", stopped.StopReason);
+        Assert.AreEqual($"{TestPaths.TestAppSource}:{line}", stopped.CurrentLocation);
+    }
+
+    /// <summary>
+    /// Attaching to an apphost, which is the one combination the suite never covered. Every other
+    /// attach test targets a debuggee started as `dotnet app.dll`, so "launching fails and attaching
+    /// works" has always been confounded with "the target is an apphost" against "the target is the
+    /// muxer". This separates them: the debuggee is an apphost and the debugger attaches to it
+    /// already running, so the launch path is not involved at all.
+    ///
+    /// Attaching reaches ICorDebug::DebugActiveProcess by the same route a launch does, and on the
+    /// macOS runner a launch hangs inside task_for_pid underneath it. If this hangs too, the launch
+    /// path is exonerated and what matters is only which binary the debuggee is. If it passes, the
+    /// two have to be told apart some other way.
+    /// </summary>
+    [TestMethod]
+    public async Task Attach_ToAnAppHost_StopsAtTheBreakpoint()
+    {
+        if (OperatingSystem.IsMacOS()
+            && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true"
+            && Environment.GetEnvironmentVariable("SHARPDBG_PROBE_MACOS_LAUNCH") != "1")
+            Assert.Inconclusive("Under investigation on the macOS runner - UPSTREAM.md defect 17");
+
+        Assert.IsTrue(File.Exists(TestPaths.TestAppExecutable),
+            $"The test app's apphost must be built: {TestPaths.TestAppExecutable}");
+
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.StartAppHost();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var breakpoint = session.SetBreakpoint(TestPaths.TestAppSource, line);
+        Assert.IsTrue(breakpoint.Verified, $"Breakpoint was not verified: {breakpoint.Message}");
+
+        // Not the WaitForStop above: that one also waits for Started, which start_program sets and an
+        // attach never does.
+        var reached = DebuggeeProcess.SpinUntil(() => !session.GetExecutionState().IsRunning, StopTimeout);
+        var stopped = session.GetExecutionState();
+
+        Assert.IsTrue(reached,
+            $"Never stopped. State: running={stopped.IsRunning}, reason={stopped.StopReason}");
         Assert.AreEqual("breakpoint", stopped.StopReason);
         Assert.AreEqual($"{TestPaths.TestAppSource}:{line}", stopped.CurrentLocation);
     }

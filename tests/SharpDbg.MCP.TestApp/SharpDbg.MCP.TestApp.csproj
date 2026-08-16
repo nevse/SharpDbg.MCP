@@ -10,4 +10,32 @@
     <Optimize>false</Optimize>
   </PropertyGroup>
 
+  <!--
+    macOS will not let a debugger take another process's task port unless the target carries
+    com.apple.security.get-task-allow. The apphost the SDK produces is ad-hoc signed with no
+    entitlements at all, so debugging it depends on the machine granting the right some other way -
+    an interactive session does, GitHub's macOS runners do not. There it fails the worst way
+    possible: task_for_pid blocks instead of returning an error, so ICorDebug::DebugActiveProcess
+    never returns and the debugger simply stops answering. See UPSTREAM.md defect 17.
+
+    Re-signing ad-hoc with the entitlement changes nothing else about the binary. It applies to this
+    test fixture only - a real program being debugged through this MCP is the user's own, and
+    whether it is debuggable is a property of how they signed it.
+
+    The stamp keeps this incremental: codesign rewrites the apphost, so without an output to compare
+    against the target would run on every build.
+  -->
+  <Target Name="SignAppHostForDebugging"
+          Condition="$([MSBuild]::IsOSPlatform('OSX')) And '$(UseAppHost)' != 'false'"
+          AfterTargets="Build"
+          Inputs="$(TargetDir)$(TargetName)"
+          Outputs="$(IntermediateOutputPath)apphost.get-task-allow.stamp">
+    <Exec Command="codesign -s - -f --entitlements &quot;$(MSBuildProjectDirectory)/get-task-allow.entitlements&quot; &quot;$(TargetDir)$(TargetName)&quot;"
+          StandardOutputImportance="low" />
+    <!-- A silent no-op here would look exactly like the entitlement not being needed -->
+    <Exec Command="codesign -d --entitlements - &quot;$(TargetDir)$(TargetName)&quot; 2>&amp;1 | grep -q get-task-allow"
+          StandardOutputImportance="low" />
+    <Touch Files="$(IntermediateOutputPath)apphost.get-task-allow.stamp" AlwaysCreate="true" />
+  </Target>
+
 </Project>
