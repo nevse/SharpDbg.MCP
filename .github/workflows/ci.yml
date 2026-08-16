@@ -60,11 +60,21 @@ jobs:
       with:
         dotnet-version: '10.0.x'
 
+    # TEMPORARY, for this branch only: build against a SharpDbg working tree rather than the package,
+    # to check whether MattParkerDev/sharpdbg#44 is fixed. The poisoning only reproduces on this
+    # runner, so it is the only place the answer can come from.
+    - name: Clone SharpDbg at the commits that should fix #44
+      run: git clone https://github.com/MattParkerDev/sharpdbg.git ../sharpdbg && git -C ../sharpdbg checkout 32e8805
+
     - name: Restore dependencies
       run: dotnet restore
+      env:
+        SharpDbgSourcePath: ${{ github.workspace }}/../sharpdbg
 
     - name: Build
       run: dotnet build --no-restore --configuration Release
+      env:
+        SharpDbgSourcePath: ${{ github.workspace }}/../sharpdbg
 
     # The test host is killed by a segfault inside libmscordbi while it replays the events for an
     # attach in roughly a fifth of macOS runs, and the integration tests attach around thirty times
@@ -73,6 +83,8 @@ jobs:
     # of runs red for a reason that is not ours.
     - name: Integration tests
       shell: bash
+      env:
+        SharpDbgSourcePath: ${{ github.workspace }}/../sharpdbg
       run: |
         set -o pipefail
         attempt=1

@@ -89,8 +89,11 @@ public sealed class LaunchIntegrationTests
         // one launch that fails poisons the rest: ClrDebugExtensions keeps its runtime-startup state
         // in a static, so every later launch in the same test host hangs too, and four tests report
         // a defect that belongs to one.
-        if (OperatingSystem.IsMacOS() && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
-            Assert.Inconclusive("Launching an apphost hangs on the macOS runner - UPSTREAM.md defect 17");
+        // TEMPORARY, for this branch only: the skip is off so the runner attempts the apphost launch
+        // and the suite answers sharpdbg#44 by itself. If the poisoning is fixed, this is the only
+        // launch test that fails and the four after it pass; if it is not, all five fail as before.
+        ////if (OperatingSystem.IsMacOS() && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
+        ////    Assert.Inconclusive("Launching an apphost hangs on the macOS runner - UPSTREAM.md defect 17");
 
         Assert.IsTrue(File.Exists(TestPaths.TestAppExecutable),
             $"The test app's apphost must be built: {TestPaths.TestAppExecutable}");
