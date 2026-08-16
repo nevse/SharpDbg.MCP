@@ -1234,25 +1234,45 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// Pause execution (break into debugger)
+    /// Breaks into the debugger. Returns whether the adapter confirmed the pause within the
+    /// operation timeout; false means unconfirmed rather than failed, and the pause may still land.
+    ///
+    /// This used to wait forever, because the stop was recorded after the wait and so a bound would
+    /// have skipped recording it - leaving the session claiming the program runs while it was in
+    /// fact suspended. Recording it from the adapter's own confirmation instead removes that reason:
+    /// whenever the pause lands, the session learns about it, whether or not anyone is still waiting.
     /// </summary>
-    public void Pause()
+    public bool Pause()
     {
         var debugger = RequireLiveDebugger();
 
         McpLogger.LogDebugSessionEvent(_sessionId, "Pause", "Breaking execution");
 
-        // Deliberately unbounded, unlike the pause the teardown sends. Giving up waiting does not
-        // stop the adapter, so a timeout here would return while the pause is still on its way -
-        // and the line below, the only thing that records the stop, would be skipped. The session
-        // would then claim the program runs while it is in fact suspended.
-        debugger.Pause(StoppedThreadOrFirst(debugger), Timeout.InfiniteTimeSpan);
+        // One deadline covers both requests, so bounding this costs one operation timeout rather
+        // than two. The thread lookup has to be inside it: when the debuggee is running there is no
+        // retained stopped thread, so a thread has to be asked for before a pause can name one, and
+        // that request had no bound of its own. Bounding only the pause would have left the ordinary
+        // case hanging before the pause was even sent.
+        var deadline = DateTime.UtcNow + _operationTimeout;
 
-        // Stop() is synchronous and raises no stop event of its own.
-        lock (_stateLock)
+        if (StoppedThreadOrFirst(debugger, _operationTimeout) is not { } threadId)
+            return false;
+
+        var remaining = deadline - DateTime.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+            return false;
+
+        // Stop() is synchronous and raises no stop event of its own, so this is the only thing that
+        // records the stop.
+        return debugger.TryPause(threadId, remaining, MarkPaused);
+
+        void MarkPaused()
         {
-            _isRunning = false;
-            _lastStopReason = "pause";
+            lock (_stateLock)
+            {
+                _isRunning = false;
+                _lastStopReason = "pause";
+            }
         }
     }
 
@@ -1516,6 +1536,21 @@ public class DebugSession : IDisposable
         }
 
         return debugger.GetThreads().FirstOrDefault().Id;
+    }
+
+    /// <summary>
+    /// As above, but null rather than a hang when the adapter does not answer in time. Only the
+    /// retained stopped thread is free; anything else costs a request to the adapter.
+    /// </summary>
+    private int? StoppedThreadOrFirst(DapDebugger debugger, TimeSpan timeout)
+    {
+        lock (_stateLock)
+        {
+            if (_lastStoppedThreadId is { } stopped)
+                return stopped;
+        }
+
+        return debugger.TryGetThreads(timeout)?.FirstOrDefault().Id;
     }
 
     private void ClearStopState()

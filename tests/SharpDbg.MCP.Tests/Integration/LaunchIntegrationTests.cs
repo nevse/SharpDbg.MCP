@@ -183,7 +183,11 @@ public sealed class LaunchIntegrationTests
         // stream callbacks. Bracket the tail read between two full reads and compare only when
         // those match - that proves nothing landed in between, where waiting out a quiet interval
         // would only make the race rarer.
-        session.Pause();
+        //
+        // Asserted rather than discarded: Pause is bounded now and reports an unconfirmed pause by
+        // returning false, so ignoring it would leave the program running and fail below as a
+        // baffling output race instead of as the pause that did not land.
+        Assert.IsTrue(session.Pause(), "The program was never paused, so there is no fixed tail to read");
 
         IReadOnlyList<OutputLine> all = [];
         IReadOnlyList<OutputLine> newest = [];

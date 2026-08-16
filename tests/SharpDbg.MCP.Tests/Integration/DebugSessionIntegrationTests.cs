@@ -526,6 +526,33 @@ public sealed class DebugSessionIntegrationTests
     }
 
     /// <summary>
+    /// Pausing used to wait without any bound. The stop was recorded after the wait, so putting a
+    /// bound on it would have skipped recording it whenever the adapter was slow, and the session
+    /// would then have claimed the program was running while it was in fact suspended. The stop is
+    /// now recorded from the adapter's own confirmation instead, which is what makes the bound safe.
+    ///
+    /// The observable half of that: a confirmed pause has already written the state. This reads it
+    /// with no spin on purpose — a poll would pass either way and prove nothing.
+    /// </summary>
+    [TestMethod]
+    public async Task Pause_WhenConfirmed_HasAlreadyRecordedTheStop()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        Assert.IsTrue(session.Pause(), "The adapter did not confirm the pause");
+
+        var state = session.GetExecutionState();
+        Assert.IsFalse(state.IsRunning, "A confirmed pause left the session reporting the program as running");
+        Assert.AreEqual("pause", state.StopReason);
+
+        // And the state it reports matches reality, not just its own bookkeeping
+        Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee kept running while reported paused");
+    }
+
+    /// <summary>
     /// Regression: continuing an already-running process threw CORDBG_E_SUPERFLOUS_CONTINUE
     /// straight out of COM instead of being reported as a no-op.
     /// </summary>

@@ -969,7 +969,20 @@ public sealed class DebuggingTools
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
 
-            session.Pause();
+            // False is not a failure: the adapter has not answered yet, and the pause may still
+            // land. Saying so beats both waiting forever and claiming a stop that has not happened.
+            if (!session.Pause())
+            {
+                var pendingResponse = new
+                {
+                    success = false,
+                    session_id = session.SessionId,
+                    error = "The debug adapter has not confirmed the pause yet.",
+                    explanation = "The request was sent and may still take effect. Call "
+                        + "get_process_status to see whether the program stopped."
+                };
+                return JsonSerializer.Serialize(pendingResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
 
             var response = new
             {

@@ -23,22 +23,21 @@ The replaced-breakpoint freeze went upstream in two halves: the recovery as
 0.1.13. Terminating a running debuggee went up as
 [#38](https://github.com/MattParkerDev/sharpdbg/issues/38) and is fixed in 0.1.13.
 
-### `pause_execution` can wait forever on a stalled adapter
-`DebugSession.Pause` passes an infinite timeout on purpose: nothing raises a stop event for a pause,
-so the line after the request is the only record that the program stopped, and a timeout would skip
-it while the pause still landed — leaving the session insisting the program runs while it stands
-still. That is a silent lie on a common path, traded for a hang on a rare one.
+### Most adapter requests still have no bound
+`pause_execution` used to be the named case and is now bounded: `DapDebugger.TryPause` and
+`TryGetThreads` take a timeout, and the stop is recorded from the adapter's own confirmation rather
+than after the wait, so giving up waiting no longer risks the session claiming a program runs while
+it stands still.
 
-The hang is narrower than it looks. When the debuggee is actually running, `StoppedThreadOrFirst`
-falls through to `GetThreads`, itself an unbounded request, before the pause is even sent — so the
-bound never covered the ordinary case. It covered one state: already stopped, `_lastStoppedThreadId`
-retained, adapter wedged, reachable in practice only via `evaluate_expression`. Six sibling
-operations hang identically in that state, so pause is not the outlier.
+Its siblings were never the outlier and are still unbounded. `get_threads`, `get_stack_trace`,
+`get_variables`, `expand_variable`, `evaluate_expression`, the three steps and `continue_execution`
+all go through `SendRequestSync`, which has no timeout, so a wedged adapter blocks the caller for the
+life of the process. SharpDbg serializes every request behind one lock, so the first one to wedge
+holds off the rest, including a disconnect.
 
-Worth doing only as the shape `start_program` already uses: bound the request and tear the session
-down on expiry, so no reusable state survives a pause that may still land. Recording a genuinely
-unknown state instead would reach `ExecutionState`, `get_process_status`, `wait_for_stop` and the
-README, which is out of proportion to this window.
+The pause fix is the shape to copy: bound the request, and write whatever state the operation records
+from the completion callback rather than after the wait. Doing it wholesale means a decision about
+what each tool reports when unconfirmed, which is why it is not a mechanical change.
 **Effort: M**
 
 ### Consider a `get_exception_info` tool

@@ -4,6 +4,7 @@ using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
 using Newtonsoft.Json.Linq;
 
 using SharpDbg.InMemory;
+using SharpDbg.MCP.Logging;
 
 using MSBreakpoint = Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages.Breakpoint;
 
@@ -141,7 +142,7 @@ internal sealed class DapDebugger : IDisposable
     /// handler, and it serializes every request behind one lock, so a stalled handler also holds off
     /// the disconnect a teardown would send. Disposing the adapter is the only step that does not
     /// need that lock, which is why a caller on the teardown path has to be able to reach it. A
-    /// caller that is not on that path may pass an infinite timeout and wait.
+    /// caller that is not on that path may pass an infinite timeout and wait, though none does now.
     /// </summary>
     private void SendRequestWithTimeout<TArgs>(DebugRequest<TArgs> request, TimeSpan timeout, string what)
         where TArgs : class, new()
@@ -185,6 +186,39 @@ internal sealed class DapDebugger : IDisposable
     {
         var response = _host.SendRequestSync(new ThreadsRequest());
         return response.Threads?.Select(t => (t.Id, t.Name)).ToList() ?? [];
+    }
+
+    /// <summary>
+    /// The debuggee's threads, or null if the adapter did not answer within <paramref
+    /// name="timeout"/>. Exists for the pause path, which needs a thread to pause and so asks for
+    /// one first: an unbounded lookup there would hang before the pause was even sent, which is
+    /// exactly what bounding the pause is meant to prevent.
+    /// </summary>
+    public List<(int Id, string Name)>? TryGetThreads(TimeSpan timeout)
+    {
+        _host.VerifySynchronousOperationAllowed();
+
+        var completed = new TaskCompletionSource<ThreadsResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _host.SendRequest(
+            new ThreadsRequest(),
+            (_, response) => completed.TrySetResult(response),
+            (_, ex) => completed.TrySetException(ex));
+
+        if (!((IAsyncResult)completed.Task).AsyncWaitHandle.WaitOne(timeout))
+        {
+            // Nobody is left to receive an exception from a request that fails after this point
+            completed.Task.ContinueWith(
+                t => McpLogger.LogWarning(
+                    "Threads request failed after the caller stopped waiting: {Error}",
+                    t.Exception!.GetBaseException().Message),
+                TaskContinuationOptions.OnlyOnFaulted);
+
+            return null;
+        }
+
+        var threads = completed.Task.GetAwaiter().GetResult();
+        return threads.Threads?.Select(t => (t.Id, t.Name)).ToList() ?? [];
     }
 
     public List<StackFrameInfo> GetStackTrace(int threadId)
@@ -265,14 +299,55 @@ internal sealed class DapDebugger : IDisposable
     public void Continue(int threadId) => _host.SendRequestSync(new ContinueRequest { ThreadId = threadId });
 
     /// <summary>
-    /// Suspends the debuggee. The bound is the caller's to choose, and the one caller left chooses
-    /// none: pause_execution waits indefinitely on purpose - see the comment on DebugSession.Pause
-    /// for why a bound there would lie about state. The teardown used to pass one, to make a
-    /// terminate land on a running debuggee; SharpDbg synchronizes inside Terminate since 0.1.13, so
-    /// it no longer pauses at all. The parameter stays for the backlog item that would bound this.
+    /// Suspends the debuggee, returning whether the adapter confirmed it within <paramref
+    /// name="timeout"/>. <paramref name="onPaused"/> runs the moment the adapter confirms, which may
+    /// be after this call has already given up waiting - that is the point of it. Recording the stop
+    /// from there rather than from the return is what lets the wait be bounded at all: giving up
+    /// stops us waiting but does not stop the adapter, so a pause can still land afterwards, and a
+    /// caller that recorded state only on return would then believe the program is running while it
+    /// is suspended.
+    ///
+    /// <paramref name="onPaused"/> runs on the adapter's callback thread and must not throw or block.
+    /// A false return means unconfirmed, not failed. A request that actually fails throws, and does
+    /// so on this thread only while this call is still waiting; afterwards there is nobody to throw
+    /// to, so the failure is logged instead.
     /// </summary>
-    public void Pause(int threadId, TimeSpan timeout) =>
-        SendRequestWithTimeout(new PauseRequest { ThreadId = threadId }, timeout, "Pausing the program");
+    public bool TryPause(int threadId, TimeSpan timeout, Action onPaused)
+    {
+        // Same guard SendRequestSync applies: the reader thread delivers events and reads responses,
+        // so blocking it on a response would deadlock
+        _host.VerifySynchronousOperationAllowed();
+
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _host.SendRequest(
+            new PauseRequest { ThreadId = threadId },
+            _ =>
+            {
+                // Before signalling, so a caller still waiting never sees the pause confirmed with
+                // the state not yet written
+                onPaused();
+                completed.TrySetResult();
+            },
+            (_, ex) => completed.TrySetException(ex));
+
+        if (!((IAsyncResult)completed.Task).AsyncWaitHandle.WaitOne(timeout))
+        {
+            // Nobody is left to receive an exception from a request that fails after this point
+            completed.Task.ContinueWith(
+                t => McpLogger.LogWarning(
+                    "Pause failed after the caller stopped waiting: {Error}",
+                    t.Exception!.GetBaseException().Message),
+                TaskContinuationOptions.OnlyOnFaulted);
+
+            return false;
+        }
+
+        // Waiting on the handle rather than on the task: Task.Wait throws the fault wrapped in an
+        // AggregateException, which would hide the ProtocolException this rethrows with its own type
+        completed.Task.GetAwaiter().GetResult();
+        return true;
+    }
 
     public void StepOver(int threadId) => _host.SendRequestSync(new NextRequest { ThreadId = threadId });
 

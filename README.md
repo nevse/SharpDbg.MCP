@@ -312,7 +312,7 @@ Set these as environment variables in your client's configuration:
 |---|---|---|
 | `SHARPDBG_LOG_LEVEL` | `Trace`, `Debug`, `Information`, `Warning`, `Error` or `Critical` | `Information` |
 | `SHARPDBG_MAX_SESSIONS` | Sessions open at once, each debugging its own process | `1` |
-| `SHARPDBG_OPERATION_TIMEOUT_SECONDS` | Timeout for debugging operations | `30` |
+| `SHARPDBG_OPERATION_TIMEOUT_SECONDS` | Bounds attaching, starting, pausing and closing a session. Steps and reads are not bounded | `30` |
 | `SHARPDBG_EVAL_TIMEOUT_MS` | Expression evaluation timeout, minimum 100 | `5000` |
 | `SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS` | How long to wait for a breakpoint to bind before reporting it unverified, minimum 100 | `2000` |
 | `SHARPDBG_JUST_MY_CODE` | Restrict debugging to your own code. See above before turning this off | `true` |
