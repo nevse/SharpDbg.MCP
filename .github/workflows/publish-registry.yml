@@ -1,0 +1,123 @@
+name: MCP Registry
+
+# The registry entry is a second publication, separate from the NuGet package, and nothing about
+# pushing to nuget.org updates it. Done by hand for 0.1.0, it was still reporting that version after
+# 0.1.1 shipped, which is what this exists to stop happening again.
+#
+# It is its own workflow rather than a job in ci.yml because of the wait below: on a release this
+# starts at the same moment ci.yml starts building, and it spends most of its life asleep waiting for
+# nuget.org. Keeping it out means a slow registry never holds up the package.
+on:
+  release:
+    types: [ published ]
+  # For a version already on nuget.org - recovering from a failure here, or catching up a release cut
+  # before this workflow existed
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version already published to nuget.org, e.g. 0.1.1'
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      # The registry authenticates the io.github.nevse namespace from this token. No secret is
+      # stored: the same OIDC exchange the NuGet push already relies on.
+      id-token: write
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v7
+
+    # Read from the tag on a release, and from the input when catching up by hand. Both come in
+    # through the environment rather than being interpolated into the script, so neither can inject.
+    - name: Resolve the version
+      id: version
+      env:
+        EVENT: ${{ github.event_name }}
+        TAG: ${{ github.ref_name }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        if [ "$EVENT" = "release" ]; then
+          value="${TAG#v}"
+        else
+          value="$INPUT_VERSION"
+        fi
+
+        case "$value" in
+          '' | *[!0-9A-Za-z.+-]* )
+            echo "::error::'$value' is not a package version"
+            exit 1
+            ;;
+        esac
+
+        echo "value=$value" >> "$GITHUB_OUTPUT"
+
+    # The registry proves we own the name by reading the mcp-name marker out of the package README on
+    # nuget.org, so there is nothing for it to verify until nuget has finished validating the push.
+    # That took several minutes for 0.1.1, and on a release ci.yml is only pushing the package about
+    # now, so this waits rather than failing on a package that is on its way.
+    - name: Wait for nuget.org to serve the package README
+      env:
+        VERSION: ${{ steps.version.outputs.value }}
+      run: |
+        url="https://api.nuget.org/v3-flatcontainer/dotnetdebugger.mcp/${VERSION}/readme"
+
+        for attempt in $(seq 1 40); do
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "$url" || echo 000)
+
+          if [ "$code" = "200" ]; then
+            echo "Served after $attempt attempt(s)"
+            exit 0
+          fi
+
+          echo "attempt $attempt: HTTP $code"
+          sleep 30
+        done
+
+        echo "::error::$url never became available, so the registry cannot verify the package"
+        exit 1
+
+    # Same rewrite ci.yml does before packing, and for the same reason: the committed manifest carries
+    # 0.0.0-dev, and the registry matches its version against the published package.
+    - name: Stamp the version into server.json
+      env:
+        VERSION: ${{ steps.version.outputs.value }}
+      run: |
+        python3 - <<'PY'
+        import json, os, pathlib
+        version = os.environ["VERSION"]
+        path = pathlib.Path("src/SharpDbg.MCP/.mcp/server.json")
+        manifest = json.loads(path.read_text())
+        manifest["version"] = version
+        for package in manifest["packages"]:
+            package["version"] = version
+        path.write_text(json.dumps(manifest, indent=2) + "\n")
+        PY
+
+    # Always the latest binary on purpose: an older one fails against the current registry with
+    # "invalid audience", which reads like an authentication problem rather than a stale tool.
+    - name: Install mcp-publisher
+      run: |
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+
+        curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${os}_${arch}.tar.gz" \
+          | tar xz mcp-publisher
+
+    - name: Authenticate
+      run: ./mcp-publisher login github-oidc
+
+    - name: Publish
+      run: ./mcp-publisher publish src/SharpDbg.MCP/.mcp/server.json
+
+    - name: Report what the registry now holds
+      if: always()
+      run: |
+        curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.nevse" \
+          | python3 -m json.tool
