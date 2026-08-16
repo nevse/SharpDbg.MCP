@@ -76,35 +76,11 @@ public sealed class LaunchIntegrationTests
     {
         var line = TestPaths.FindMarkerLine("STARTUP-TARGET");
 
-        // Launching an apphost hangs on GitHub's macOS runner and nowhere else - not on Linux, not on
-        // Windows, and not on macOS off the runner, where this is verified on every local run.
-        //
-        // Located, by logging every step of the launch on the runner: ICorDebug::DebugActiveProcess
-        // never returns. Everything before it does - the runtime-startup registration, the diagnostic
-        // resume, the startup callback.
-        //
-        // Attaching reaches the same call and passes, but that says nothing about launching: the
-        // debuggee is in a different state on the way in. dbgshim checks whether the transport pipe
-        // already exists (PAL_RuntimeStartupHelper::IsCoreClrProcessReady), and for an attach it does,
-        // so the whole runtime-startup handshake is skipped and there is something to connect to.
-        // A launch runs that handshake, and it is the handshake that decides whether the transport is
-        // ever created.
-        //
-        // Why it hangs there is unknown, and four explanations have been disproved by measurement
-        // rather than argument, along with the runner's SDK and runtime, the test sequence, stale
-        // diagnostic sockets, its core count, its macOS version and code signing. UPSTREAM.md defect
-        // 17 has the list, so that none of them is paid for twice.
-        //
-        // Skipped only on the runner, because that is the only place it fails and the local run is
-        // what keeps the capability covered. Skipping this one test is enough because the first
-        // failed launch takes every later one with it, so the other four failures were its
-        // consequence rather than four defects. SHARPDBG_PROBE_MACOS_LAUNCH=1 lifts the skip so the
-        // probe workflow can let it hang on purpose and photograph it.
-        if (OperatingSystem.IsMacOS()
-            && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true"
-            && Environment.GetEnvironmentVariable("SHARPDBG_PROBE_MACOS_LAUNCH") != "1")
-            Assert.Inconclusive("Launching an apphost hangs on the macOS runner - UPSTREAM.md defect 17");
-
+        // This used to hang on GitHub's macOS runner and was skipped there. The cause was not in the
+        // debugger: macOS would not hand over the debuggee's task port because the apphost carried no
+        // com.apple.security.get-task-allow, and it refused by blocking, so task_for_pid never
+        // returned and DebugActiveProcess never came back. The test app is now re-signed with that
+        // entitlement at build time, which is why this runs everywhere again. UPSTREAM.md defect 17.
         Assert.IsTrue(File.Exists(TestPaths.TestAppExecutable),
             $"The test app's apphost must be built: {TestPaths.TestAppExecutable}");
 
@@ -127,19 +103,13 @@ public sealed class LaunchIntegrationTests
     /// muxer". This separates them: the debuggee is an apphost and the debugger attaches to it
     /// already running, so the launch path is not involved at all.
     ///
-    /// Attaching reaches ICorDebug::DebugActiveProcess by the same route a launch does, and on the
-    /// macOS runner a launch hangs inside task_for_pid underneath it. If this hangs too, the launch
-    /// path is exonerated and what matters is only which binary the debuggee is. If it passes, the
-    /// two have to be told apart some other way.
+    /// That mattered: on the macOS runner an apphost debuggee hung the same way whether it was
+    /// launched or attached to, which is what proved the launch path innocent and put the cause in
+    /// the target's entitlements instead.
     /// </summary>
     [TestMethod]
     public async Task Attach_ToAnAppHost_StopsAtTheBreakpoint()
     {
-        if (OperatingSystem.IsMacOS()
-            && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true"
-            && Environment.GetEnvironmentVariable("SHARPDBG_PROBE_MACOS_LAUNCH") != "1")
-            Assert.Inconclusive("Under investigation on the macOS runner - UPSTREAM.md defect 17");
-
         Assert.IsTrue(File.Exists(TestPaths.TestAppExecutable),
             $"The test app's apphost must be built: {TestPaths.TestAppExecutable}");
 
