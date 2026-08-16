@@ -50,14 +50,22 @@ if a publish is ever refused for no other apparent reason.
 
 The push uses `--skip-duplicate`, so re-running a release that already published is harmless.
 
-## After the first release: the MCP Registry
+## The MCP Registry
 
-Only needed once the package is live on nuget.org, because the registry verifies that the package
-exists and that its README declares a matching `mcp-name`. Both are already in place:
-`docs/nuget-readme.md` opens with `<!-- mcp-name: io.github.nevse/dotnet-debugger-mcp -->`, matching
-`name` in `src/SharpDbg.MCP/.mcp/server.json`.
+**Done once, for 0.1.0, by hand on 15 August 2026**, which claimed the `io.github.nevse/*` namespace.
+Nothing re-publishes it, so it goes stale on every release until that is automated — see the backlog.
+What the registry currently holds:
 
-Wait for nuget.org to finish validating the package — its README has to be reachable at
+```bash
+curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.nevse"
+```
+
+The registry verifies that the package exists on nuget.org and that its README declares a matching
+`mcp-name`. Both are in place: `docs/nuget-readme.md` opens with
+`<!-- mcp-name: io.github.nevse/dotnet-debugger-mcp -->`, matching `name` in
+`src/SharpDbg.MCP/.mcp/server.json`.
+
+To re-publish, wait for nuget.org to finish validating the package — its README has to be reachable at
 `https://api.nuget.org/v3-flatcontainer/dotnetdebugger.mcp/<version>/readme` — then:
 
 ```bash
@@ -65,10 +73,6 @@ Wait for nuget.org to finish validating the package — its README has to be rea
 ./mcp-publisher login github
 ./mcp-publisher publish src/SharpDbg.MCP/.mcp/server.json
 ```
-
-The first publish claims the `io.github.nevse/*` namespace, which is why it is worth doing by hand
-and watching, rather than adding a step nobody has seen run. Automating it afterwards uses the same
-GitHub OIDC the NuGet push already relies on.
 
 Note that the committed `server.json` carries `0.0.0-dev`; CI rewrites it at pack time. Publishing to
 the registry by hand means passing the real version — edit the file for that run, or take the copy

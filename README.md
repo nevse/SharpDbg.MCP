@@ -99,6 +99,30 @@ The command is then `dotnet-debugger-mcp`, with no arguments. This needs `~/.dot
 `PATH`, which is why it is not the default suggestion: a client that cannot find the command fails
 the same way a wrong path does.
 
+### Upgrading
+
+`dotnet tool exec` can keep running a version it has already downloaded, even after a newer one is
+published and indexed. Nothing looks wrong when it does: the server starts, the client reports it as
+connected, and the only sign is that the new release's tools are missing.
+
+Measured while releasing 0.1.1. With only 0.1.0 in the local package folder, the unpinned command kept
+running 0.1.0, and clearing the NuGet HTTP cache did not change that. Naming the version once fetched
+the new package, after which the unpinned command used it too:
+
+```bash
+dotnet tool exec DotnetDebugger.Mcp --version 0.1.1 --yes
+```
+
+Installing the tool avoids the question entirely, because then upgrading is explicit:
+
+```bash
+dotnet tool update -g DotnetDebugger.Mcp
+```
+
+To see which version is actually running, ask the client to list this server's tools, or read the
+first line the server writes to stderr — it names the version at startup. A client's own health check
+reports only that the process started, not what it is.
+
 ## A worked example
 
 Catching a program before it has run a single line, which is the case attaching cannot reach:
