@@ -77,18 +77,22 @@ public sealed class LaunchIntegrationTests
         var line = TestPaths.FindMarkerLine("STARTUP-TARGET");
 
         // Launching an apphost hangs on GitHub's macOS runner and nowhere else - not on Linux, not on
-        // Windows, and not on macOS off the runner, where this is verified on every local run. The
-        // debuggee starts and opens its diagnostic port; the runtime-startup callback never arrives.
-        // Ruled out by measurement rather than argument: the runner's SDK and runtime, the test
-        // sequence, stale diagnostic sockets, its core count, its macOS version, and code signing -
-        // the runner is the more permissive machine, with SIP off and developer mode on, and its
-        // apphost is signed identically. See UPSTREAM.md defect 17.
+        // Windows, and not on macOS off the runner, where this is verified on every local run.
+        //
+        // Located, by logging every step of the launch on the runner: ICorDebug::DebugActiveProcess
+        // never returns. Everything before it does - the runtime-startup registration, the diagnostic
+        // resume, the startup callback. Attach reaches the same call and 28 attach tests pass in the
+        // run where four launches do not.
+        //
+        // Why it hangs there is unknown, and four explanations have been disproved by measurement
+        // rather than argument, along with the runner's SDK and runtime, the test sequence, stale
+        // diagnostic sockets, its core count, its macOS version and code signing. UPSTREAM.md defect
+        // 17 has the list, so that none of them is paid for twice.
         //
         // Skipped only on the runner, because that is the only place it fails and the local run is
-        // what keeps the capability covered. It is skipped rather than left red for the reason the
-        // one launch that fails poisons the rest: ClrDebugExtensions keeps its runtime-startup state
-        // in a static, so every later launch in the same test host hangs too, and four tests report
-        // a defect that belongs to one.
+        // what keeps the capability covered. Skipping this one test is enough because the first
+        // failed launch takes every later one with it, so the other four failures were its
+        // consequence rather than four defects.
         if (OperatingSystem.IsMacOS() && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
             Assert.Inconclusive("Launching an apphost hangs on the macOS runner - UPSTREAM.md defect 17");
 
