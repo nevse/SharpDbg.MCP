@@ -36,6 +36,11 @@ Some of these need changes in the underlying debugger rather than here.
   `launch_program`, because the debugger reports nothing about the process it starts.
 - **Report the exit code of a launched program.** It always reads as `0`, whatever the program
   returned.
+- **Debug a self-contained single-file publish.** The runtime is packed inside the executable, so the
+  debugger shim cannot find it to load the matching components. The attempt fails immediately with
+  `CORDBG_E_DEBUG_COMPONENT_MISSING` (`0x80131C3C`), reported as
+  `Attempting to register for runtime startup failed: -2146231236`. Self-contained on its own works,
+  and single-file on its own works; only the combination does not.
 - **Watch expressions**, **hot reload** and **data breakpoints** are not implemented.
 
 ## Requirements
@@ -189,19 +194,20 @@ Debug builds already do this. For a Release build, or any project that changes t
 Optimized code also moves locals out of reach, so `get_variables` is only fully useful with
 `<Optimize>false</Optimize>`.
 
-### macOS: a self-contained app may need an entitlement
+### macOS: headless environments may need an entitlement
 
 macOS will not let a debugger take another process's task port unless the target carries
 `com.apple.security.get-task-allow`. A program run through the `dotnet` muxer is fine, because the
-muxer ships with that entitlement. An apphost produced for a self-contained or single-file publish is
-ad-hoc signed with no entitlements at all.
+muxer ships with that entitlement; an apphost produced by `dotnet publish` is ad-hoc signed with no
+entitlements at all.
 
-Where the entitlement is missing, macOS refuses by blocking rather than failing, so the debugger
-stops responding instead of reporting anything: the call simply never returns.
+**On a desktop session this does not affect you.** Debugging a self-contained publish carrying no
+entitlements is verified to work there.
 
-Whether you hit this depends on the machine. On an interactive desktop session it has worked without
-the entitlement; on a headless CI runner it does not. If a launch or attach hangs on macOS with no
-error, sign the target and try again:
+It matters in a headless environment, such as a CI runner, and it fails badly when it does: macOS
+refuses by blocking rather than returning an error, so the debugger stops responding and the call
+never comes back. If a launch or attach hangs on macOS with no error at all, sign the target and try
+again:
 
 ```bash
 codesign -s - -f --entitlements get-task-allow.entitlements ./MyApp
