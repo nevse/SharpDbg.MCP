@@ -64,7 +64,7 @@ jobs:
     # to check whether MattParkerDev/sharpdbg#44 is fixed. The poisoning only reproduces on this
     # runner, so it is the only place the answer can come from.
     - name: Clone SharpDbg with the resume bounded on top of his #44 fixes
-      run: git clone https://github.com/nevse/sharpdbg.git ../sharpdbg && git -C ../sharpdbg checkout 43c84ffaa821a5614350c89a32b7643a8d0cae3b
+      run: git clone https://github.com/nevse/sharpdbg.git ../sharpdbg && git -C ../sharpdbg checkout 1d259d81f06b4f8b612ec7b270df70020d4db742
 
     - name: Restore dependencies
       run: dotnet restore
