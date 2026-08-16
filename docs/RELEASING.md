@@ -44,36 +44,49 @@ if a publish is ever refused for no other apparent reason.
    git push origin v0.1.0
    ```
 
-3. Create the GitHub Release for that tag. **The workflow triggers on the release, not the tag**, so
+3. Create the GitHub Release for that tag. **Both workflows trigger on the release, not the tag**, so
    a pushed tag alone publishes nothing.
-4. Watch the `Package` job. It runs only after the unit and integration jobs pass.
+4. Watch two things. `ci.yml`'s `Package` job, which runs only after the unit and integration jobs
+   pass and does the NuGet push; and `publish-registry.yml`, which starts at the same time and spends
+   most of its run waiting for nuget.org before it updates the registry.
 
 The push uses `--skip-duplicate`, so re-running a release that already published is harmless.
 
 ## The MCP Registry
 
-**Done once, for 0.1.0, by hand on 15 August 2026**, which claimed the `io.github.nevse/*` namespace.
-Nothing re-publishes it, so it goes stale on every release until that is automated — see the backlog.
-What the registry currently holds:
+Automatic since 0.1.1: `publish-registry.yml` runs on the same release and needs nothing from you.
+It authenticates with `mcp-publisher login github-oidc` — the same OIDC exchange the NuGet push uses,
+so there is no second secret — and publishes `.mcp/server.json` with the version stamped in.
+
+The one-time namespace claim is done. `io.github.nevse/dotnet-debugger-mcp` was published by hand on
+15 August 2026 for 0.1.0, which established `io.github.nevse/*`. What the registry holds now:
 
 ```bash
 curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.nevse"
 ```
 
-The registry verifies that the package exists on nuget.org and that its README declares a matching
-`mcp-name`. Both are in place: `docs/nuget-readme.md` opens with
-`<!-- mcp-name: io.github.nevse/dotnet-debugger-mcp -->`, matching `name` in
-`src/SharpDbg.MCP/.mcp/server.json`.
+**Why it is a separate workflow rather than a step in `package`.** The registry proves we own the name
+by reading the `mcp-name` marker out of the package README *on nuget.org*, so there is nothing to
+verify until nuget has finished validating the push — several minutes for 0.1.1, and on a release the
+`package` job is only pushing at about that moment. The workflow polls
+`https://api.nuget.org/v3-flatcontainer/dotnetdebugger.mcp/<version>/readme` for up to 20 minutes, and
+being its own workflow means it can sleep through that without holding up the package.
 
-To re-publish, wait for nuget.org to finish validating the package — its README has to be reachable at
-`https://api.nuget.org/v3-flatcontainer/dotnetdebugger.mcp/<version>/readme` — then:
+The marker itself is in `docs/nuget-readme.md`, which opens with
+`<!-- mcp-name: io.github.nevse/dotnet-debugger-mcp -->`, matching `name` in
+`src/SharpDbg.MCP/.mcp/server.json`. Changing either without the other breaks ownership verification.
+
+### Re-publishing a version
+
+For a release cut before this workflow existed, or a publish that failed and needs retrying:
 
 ```bash
-# from https://github.com/modelcontextprotocol/registry/releases/latest
-./mcp-publisher login github
-./mcp-publisher publish src/SharpDbg.MCP/.mcp/server.json
+gh workflow run publish-registry.yml -f version=0.1.1
 ```
 
-Note that the committed `server.json` carries `0.0.0-dev`; CI rewrites it at pack time. Publishing to
-the registry by hand means passing the real version — edit the file for that run, or take the copy
-from inside the published `.nupkg`.
+The version must already be live on nuget.org — the workflow waits for it rather than creating it.
+This is how 0.1.1 was brought up to date after the workflow was added.
+
+Publishing by hand needs `mcp-publisher login github`, a browser device flow, and the real version
+written into the manifest first: the committed `server.json` carries `0.0.0-dev`, and both CI paths
+rewrite it. Prefer the dispatch above.

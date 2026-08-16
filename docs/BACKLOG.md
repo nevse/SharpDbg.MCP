@@ -44,20 +44,6 @@ from the completion callback rather than after the wait. Doing it wholesale mean
 what each tool reports when unconfirmed, which is why it is not a mechanical change.
 **Effort: M**
 
-## P3 — distribution
-
-### Keep the MCP Registry entry in step with releases
-Both halves of the first publish are done. The package is `DotnetDebugger.Mcp`, typed `McpServer` and
-carrying `.mcp/server.json`, so nuget.org lists it under `packagetype=mcpserver`; and the registry
-entry `io.github.nevse/dotnet-debugger-mcp` was published by hand on 15 August 2026, which claimed the
-`io.github.nevse/*` namespace. Check it with:
-
-```bash
-curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.nevse"
-```
-
-What is left is that nothing re-publishes it. The registry still reports 0.1.0 while nuget.org has
-0.1.1, and it will fall a release further behind each time. The `package` job already holds the GitHub
-OIDC token `mcp-publisher login github` wants and already knows the version, so the step belongs there
-rather than in a checklist someone has to remember.
-**Effort: S**
+Distribution used to be a section here. It is done: the package is on nuget.org, the registry entry is
+published, and `publish-registry.yml` keeps the two in step on every release. See
+[RELEASING.md](RELEASING.md).
