@@ -325,6 +325,104 @@ public sealed class DebuggingTools
     }
 
     [McpServerTool, Description(
+        "Read the exception the debuggee is stopped on: its type, message, HResult, the assembly it " +
+        "came from and the stack trace it carries. Nothing else reports these - a stop with " +
+        "stop_reason 'exception' names neither the type nor the message - so this is what turns one " +
+        "into something you can act on. " +
+        "Only works while stopped on an exception; omit thread_id to read the thread the stop was " +
+        "reported on. Note that set_exception_break_mode 'never' resumes exception stops before a " +
+        "caller can see them, so there is nothing to read in that mode. " +
+        "This is the one read that runs code inside the target - four property getters - so it is " +
+        "much slower than a stack trace or a variable read, and it gives up after " +
+        "SHARPDBG_EVAL_TIMEOUT_MS. " +
+        "Inner exceptions are not reported, and neither is whether the program is going to handle " +
+        "this one: the debugger does not pass that on. For anything beyond these fields - an inner " +
+        "exception, Data, a property of your own exception type - the exception object itself is in " +
+        "scope as $exception, so evaluate_expression with '$exception.InnerException' reads it, and " +
+        "get_variables on the frame lists it among the locals to expand.")]
+    public string GetExceptionInfo(int? thread_id = null, int? session_id = null)
+    {
+        try
+        {
+            if (thread_id is { } requested)
+                InputValidation.ValidateThreadId(requested);
+
+            var session = _sessionManager.Resolve(session_id);
+
+            if (!session.IsAttached)
+            {
+                var notAttachedResponse = new
+                {
+                    success = false,
+                    error = "Not attached to a process. Use attach_to_process first."
+                };
+                return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            var state = session.GetExecutionState();
+
+            // Checked here rather than left to fail inside the debugger, which answers a running
+            // process with an opaque COM error. The thread also has to come from somewhere when the
+            // caller does not name one, and a running process has no stopped thread to offer.
+            if (state.IsRunning)
+            {
+                var runningResponse = new
+                {
+                    success = false,
+                    session_id = session.SessionId,
+                    error = "The program is running, so it is not stopped on anything.",
+                    explanation = "Wait for a stop with wait_for_stop and check that stop_reason is "
+                        + "'exception' before reading it."
+                };
+                return JsonSerializer.Serialize(runningResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            // A launched program that has not been started reaches here too - it is not running, and
+            // it has no threads either - so it gets told what it actually needs rather than to name
+            // a thread that does not exist yet.
+            if ((thread_id ?? state.StoppedThreadId) is not { } threadId)
+            {
+                var noThreadResponse = new
+                {
+                    success = false,
+                    session_id = session.SessionId,
+                    error = state.Started
+                        ? "The session has no stopped thread to read, so pass thread_id."
+                        : $"{state.LaunchedProgram} has been launched but not started. "
+                            + "Call start_program to run it.",
+                    stop_reason = state.StopReason
+                };
+                return JsonSerializer.Serialize(noThreadResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            var thrown = session.GetExceptionInfo(threadId).GetAwaiter().GetResult();
+
+            var response = new
+            {
+                success = true,
+                session_id = session.SessionId,
+                thread_id = threadId,
+                type = thrown.TypeName,
+                message = thrown.Message,
+                hresult = thrown.HResult,
+                // The assembly the exception was raised in, which is Exception.Source rather than
+                // anything about the source file
+                source = thrown.Source,
+                // The exception's own stack trace as text, which is where it was thrown rather than
+                // where the program is now. get_stack_trace on this thread gives the same place in
+                // a form that can be walked into with get_variables.
+                stack_trace = thrown.StackTrace
+            };
+
+            return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return DebuggerErrors.ErrorResponse(ex);
+        }
+    }
+
+    [McpServerTool, Description(
         "Get the status of a debug session. Omit session_id unless more than one session is open, in " +
         "which case list_sessions shows which is which.")]
     public string GetProcessStatus(int? session_id = null)

@@ -60,7 +60,7 @@ Breakpoints: `set_breakpoint`, `set_function_breakpoint`, `remove_breakpoint`, `
 
 Execution and inspection: `continue_execution`, `pause_execution`, `step_over`, `step_into`,
 `step_out`, `wait_for_stop`, `get_process_status`, `get_stack_trace`, `get_threads`, `get_variables`,
-`expand_variable`, `evaluate_expression`.
+`expand_variable`, `evaluate_expression`, `get_exception_info`.
 
 It also answers questions about .NET debugging internals: `search_debugging_concepts`,
 `explain_icordebug_interface`, `get_debugging_flow`, `list_debugging_concepts`.

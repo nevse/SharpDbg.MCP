@@ -837,6 +837,109 @@ public sealed class DebugSessionIntegrationTests
         Assert.AreEqual(throwLine, frames[0].Line, $"Top frame should be the throw, frames: {string.Join(", ", frames.Select(f => $"{f.Name}@{f.Line}"))}");
     }
 
+    /// <summary>
+    /// A stop names the exception in no way at all - not the type, not the message - so this is
+    /// what turns "something was thrown" into something a caller can act on. It is also the one read
+    /// that runs code in the target: Message, HResult, Source and StackTrace are property getters,
+    /// evaluated one after another. That used to leave the debuggee unable to resume at all
+    /// (UPSTREAM.md defect 2, fixed in 0.1.9), which is why this goes on to prove the program still
+    /// makes progress afterwards, by the iteration number the next exception carries.
+    /// </summary>
+    [TestMethod]
+    public async Task ExceptionStop_ReportsWhatTheDebuggeeThrew()
+    {
+        var throwLine = TestPaths.FindMarkerLine("THROW-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var state = session.WaitForStop(StopTimeout);
+        Assert.IsNotNull(state, "The debuggee throws every iteration, so it must have stopped");
+        Assert.AreEqual("exception", state.StopReason);
+
+        var thrown = await session.GetExceptionInfo(state.StoppedThreadId!.Value);
+
+        Assert.AreEqual("System.InvalidOperationException", thrown.TypeName,
+            "The full type name is the whole point: nothing else reports it");
+        Assert.AreEqual(unchecked((int)0x80131509), thrown.HResult, "COR_E_INVALIDOPERATION");
+        Assert.AreEqual("SharpDbg.MCP.TestApp", thrown.Source,
+            "Source is the assembly that raised it, not a source file");
+
+        // The exception's own stack trace, which is filled in as it is thrown rather than as it
+        // unwinds, so it is already there at a first-chance stop and names the throw site
+        Assert.IsNotNull(thrown.StackTrace);
+        StringAssert.Contains(thrown.StackTrace, "ThrowAndCatch");
+        StringAssert.Contains(thrown.StackTrace, $"line {throwLine}");
+
+        var iteration = IterationThrownOn(thrown);
+
+        // get_exception_info's description sends callers to $exception for everything it does not
+        // report - an inner exception, a property of their own exception type - so the pseudo-local
+        // being there is part of what the tool promises rather than a detail of the evaluator
+        var frames = session.GetStackTrace(state.StoppedThreadId.Value);
+        var reachable = await session.EvaluateExpression("$exception.HResult", frames[0].Id);
+        Assert.AreEqual(thrown.HResult.ToString(), reachable.Result,
+            "$exception is what the caller is told to use for anything get_exception_info leaves out");
+
+        // Four evaluations at a stop used to cost the debuggee its ability to resume. Counting ticks
+        // cannot show that it did: the tick between two throws is printed the moment the process
+        // resumes, before a watcher can sample the output. The iteration number can - it advances by
+        // one per lap of the loop, so a larger one means the program really ran on.
+        Assert.IsTrue(session.Continue(), "The exception stop should have been resumable");
+
+        var next = session.WaitForStop(StopTimeout);
+        Assert.IsNotNull(next, "The debuggee throws every iteration, so it must have stopped again");
+
+        var thrownNext = await session.GetExceptionInfo(next.StoppedThreadId!.Value);
+
+        Assert.IsGreaterThan(iteration, IterationThrownOn(thrownNext),
+            "The debuggee never got past the exception it was already stopped on");
+    }
+
+    /// <summary>
+    /// The failure a caller gets for asking on the wrong stop. The debugger reports no exception and
+    /// an absent one alike, so there is nothing to tell them apart with - what matters is that the
+    /// answer says which it is rather than failing opaquely.
+    /// </summary>
+    [TestMethod]
+    public async Task ExceptionInfo_AtABreakpointStop_SaysThereIsNoException()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+
+        var state = WaitForStop(session);
+        Assert.AreEqual("breakpoint", state.StopReason);
+
+        var failure = await Assert.ThrowsExactlyAsync<ProtocolException>(
+            () => session.GetExceptionInfo(state.StoppedThreadId!.Value));
+
+        StringAssert.Contains(failure.Message, "No current exception");
+    }
+
+    /// <summary>
+    /// The debuggee's message is "thrown on iteration N", where N counts laps of its loop.
+    /// </summary>
+    private static int IterationThrownOn(ThrownException thrown)
+    {
+        Assert.IsNotNull(thrown.Message);
+
+        var lastSpace = thrown.Message.LastIndexOf(' ');
+        Assert.IsGreaterThan(0, lastSpace, $"Expected a multi-word message, got '{thrown.Message}'");
+
+        Assert.IsTrue(
+            int.TryParse(thrown.Message[(lastSpace + 1)..], out var iteration),
+            $"Expected a message ending in an iteration number, got '{thrown.Message}'");
+
+        return iteration;
+    }
+
     [TestMethod]
     public async Task ExceptionStop_WithBreakModeNever_LetsTheDebuggeeRunOn()
     {

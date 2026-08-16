@@ -20,7 +20,7 @@ surface.
 - Set breakpoints by file and line or by method name, with conditions and hit counts
 - Step over, into and out of code, and read the call stack for any thread
 - Inspect local variables, expand objects member by member, and evaluate C# expressions
-- Break on exceptions, and read the debuggee's stdout and stderr
+- Break on exceptions and read what was thrown, and read the debuggee's stdout and stderr
 - Debug more than one process at once, each with its own breakpoints and stops
 - Search embedded documentation on ICorDebug, the Debug Adapter Protocol and expression evaluation
 
@@ -31,7 +31,7 @@ Some of these need changes in the underlying debugger rather than here.
 - **Distinguish handled from unhandled exceptions.** A stop does not say whether the program would
   have handled the exception, so breaking on throws is all or nothing.
 - **Filter exception breaks by type.** The stop carries no type, so there is nothing to filter on
-  before stopping.
+  before stopping. `get_exception_info` reads the type once stopped, which is after the fact.
 - **Report the process id of a launched program.** It is `null` for a session created by
   `launch_program`, because the debugger reports nothing about the process it starts.
 - **Report the exit code of a launched program.** It always reads as `0`, whatever the program
@@ -164,6 +164,7 @@ Claude: [get_program_output()]
 | `get_variables` | Read the locals of a stack frame |
 | `expand_variable` | Expand an object into its members, which may expand further |
 | `evaluate_expression` | Evaluate a C# expression in the context of a frame |
+| `get_exception_info` | Read the type, message, HResult, source and stack trace of what was thrown |
 
 ### Documentation
 
@@ -313,7 +314,7 @@ Set these as environment variables in your client's configuration:
 | `SHARPDBG_LOG_LEVEL` | `Trace`, `Debug`, `Information`, `Warning`, `Error` or `Critical` | `Information` |
 | `SHARPDBG_MAX_SESSIONS` | Sessions open at once, each debugging its own process | `1` |
 | `SHARPDBG_OPERATION_TIMEOUT_SECONDS` | Bounds attaching, starting, pausing and closing a session. Steps and reads are not bounded | `30` |
-| `SHARPDBG_EVAL_TIMEOUT_MS` | Expression evaluation timeout, minimum 100 | `5000` |
+| `SHARPDBG_EVAL_TIMEOUT_MS` | Bounds anything that runs code in the debuggee: `evaluate_expression` and `get_exception_info`. Minimum 100 | `5000` |
 | `SHARPDBG_BREAKPOINT_BIND_TIMEOUT_MS` | How long to wait for a breakpoint to bind before reporting it unverified, minimum 100 | `2000` |
 | `SHARPDBG_JUST_MY_CODE` | Restrict debugging to your own code. See above before turning this off | `true` |
 | `SHARPDBG_ALLOW_OTHER_USER_PROCESSES` | Allow attaching to processes not owned by the current user | `false` |

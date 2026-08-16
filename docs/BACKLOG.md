@@ -30,22 +30,19 @@ than after the wait, so giving up waiting no longer risks the session claiming a
 it stands still.
 
 Its siblings were never the outlier and are still unbounded. `get_threads`, `get_stack_trace`,
-`get_variables`, `expand_variable`, `evaluate_expression`, the three steps and `continue_execution`
-all go through `SendRequestSync`, which has no timeout, so a wedged adapter blocks the caller for the
-life of the process. SharpDbg serializes every request behind one lock, so the first one to wedge
-holds off the rest, including a disconnect.
+`get_variables`, `expand_variable`, `evaluate_expression`, `get_exception_info`, the three steps and
+`continue_execution` all go through `SendRequestSync`, which has no timeout, so a wedged adapter
+blocks the caller for the life of the process. SharpDbg serializes every request behind one lock, so
+the first one to wedge holds off the rest, including a disconnect.
+
+`evaluate_expression` and `get_exception_info` look bounded and are not: both wrap the request in
+`Task.Run(...).WaitAsync(_evaluationTimeout)`, which releases the caller and leaves the pool thread,
+the adapter and its lock exactly where they were. Worth knowing before either is counted as done.
 
 The pause fix is the shape to copy: bound the request, and write whatever state the operation records
 from the completion callback rather than after the wait. Doing it wholesale means a decision about
 what each tool reports when unconfirmed, which is why it is not a mechanical change.
 **Effort: M**
-
-### Consider a `get_exception_info` tool
-Now possible: reading an exception's message, type, HResult, source and stack trace costs four
-function evaluations in the target, which was ruinous while an evaluation left the debuggee unable to
-resume and is merely slow now. The stop still does not say the exception's type, so this is the only
-way to learn it.
-**Effort: S**
 
 ## P3 — distribution
 

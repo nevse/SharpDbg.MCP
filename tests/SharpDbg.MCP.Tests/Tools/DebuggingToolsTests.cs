@@ -135,6 +135,18 @@ public class DebuggingToolsTests
     }
 
     [TestMethod]
+    public void GetExceptionInfo_WithoutAttaching_SaysToAttachFirst()
+    {
+        Assert.Contains("attach_to_process", Error(Tools().GetExceptionInfo()));
+    }
+
+    [TestMethod]
+    public void GetExceptionInfo_WithAnImpossibleThreadId_IsRejected()
+    {
+        Assert.Contains("Thread ID must be non-negative", Error(Tools().GetExceptionInfo(thread_id: -1)));
+    }
+
+    [TestMethod]
     public void ExpandVariable_WithAnImpossibleReference_IsRejected()
     {
         Assert.Contains("must be positive", Error(Tools().ExpandVariable(0)));

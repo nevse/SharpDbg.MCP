@@ -1313,6 +1313,21 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
+    /// What the debuggee threw, read off the thread it is stopped on. The stop itself carries none
+    /// of this - not even the type - so this is the only way to learn what the exception was.
+    /// Bounded by the evaluation timeout rather than the operation one, because that is what it is:
+    /// four property getters run in the target, the same cost as four EvaluateExpression calls.
+    /// </summary>
+    public async Task<ThrownException> GetExceptionInfo(int threadId)
+    {
+        var debugger = RequireLiveDebugger();
+
+        // Off the caller's thread, as evaluation is everywhere else here: the request blocks until
+        // the adapter has run all four getters
+        return await Task.Run(() => debugger.GetException(threadId)).WaitAsync(_evaluationTimeout);
+    }
+
+    /// <summary>
     /// Evaluate a C# expression in the context of a stack frame
     /// </summary>
     public async Task<EvaluationResult> EvaluateExpression(string expression, int frameId)
@@ -1737,6 +1752,17 @@ public record BoundLocation(string FilePath, int Line);
 public record ThreadInfo(
     int Id,
     string Name);
+
+/// <summary>
+/// What a thread is stopped on, as far as the debugger can be made to say. Every field but the type
+/// comes from running a property getter in the target.
+/// </summary>
+public record ThrownException(
+    string TypeName,
+    string? Message,
+    int? HResult,
+    string? Source,
+    string? StackTrace);
 
 /// <summary>
 /// Result of evaluating an expression

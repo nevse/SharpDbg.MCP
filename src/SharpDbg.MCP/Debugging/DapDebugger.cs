@@ -262,6 +262,29 @@ internal sealed class DapDebugger : IDisposable
         return new EvaluationResult(response.Result, response.Type, response.VariablesReference);
     }
 
+    /// <summary>
+    /// The exception a thread is stopped on. This is the one read that runs code in the target:
+    /// Message, HResult, Source and StackTrace are property getters, evaluated one after another,
+    /// so it costs far more than reading frames or locals. A thread carrying no exception is a
+    /// failure rather than an empty answer, because that is all the adapter reports.
+    /// Several fields of the response are dropped. The short type name and the two descriptions are
+    /// assembled upstream out of what is kept here anyway; the break mode is hardcoded to Always, so
+    /// the one field that exists to say how the exception will be treated says it of every exception.
+    /// Inner exceptions come back empty whatever was thrown, which is why they are not read either.
+    /// </summary>
+    public ThrownException GetException(int threadId)
+    {
+        var response = _host.SendRequestSync(new ExceptionInfoRequest { ThreadId = threadId });
+        var details = response.Details;
+
+        return new ThrownException(
+            details?.FullTypeName ?? response.ExceptionId,
+            details?.Message,
+            details?.HResult,
+            details?.Source,
+            details?.StackTrace);
+    }
+
     public List<AppliedBreakpoint> SetBreakpoints(string filePath, IReadOnlyList<SourceBreakpointRequest> breakpoints)
     {
         var response = _host.SendRequestSync(new SetBreakpointsRequest
