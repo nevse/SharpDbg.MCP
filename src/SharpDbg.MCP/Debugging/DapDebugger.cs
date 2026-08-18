@@ -38,7 +38,20 @@ internal sealed class DapDebugger : IDisposable
     public event Action<int, string, IReadOnlyList<int>?>? OnStopped;
 
     public event Action<int>? OnContinued;
-    public event Action? OnExited;
+
+    /// <summary>
+    /// The debuggee has gone, with its exit code when there is one. Null means the code is unknown:
+    /// a terminate carries none, and neither does the exit of a process we merely attached to.
+    /// </summary>
+    public event Action<int?>? OnExited;
+
+    /// <summary>
+    /// The pid of a program the debugger started, once it has started it. SharpDbg raises this from
+    /// its launch path only, so attaching produces nothing - which is right, since an attaching
+    /// caller named the process itself.
+    /// </summary>
+    public event Action<int>? OnProcessStarted;
+
     public event Action<string, bool>? OnOutput;
     public event Action<AppliedBreakpoint>? OnBreakpointChanged;
 
@@ -53,8 +66,11 @@ internal sealed class DapDebugger : IDisposable
         _host.RegisterEventType<InitializedEvent>(_ => _initialized.TrySetResult());
         _host.RegisterEventType<StoppedEvent>(OnStoppedEvent);
         _host.RegisterEventType<ContinuedEvent>(e => OnContinued?.Invoke(e.ThreadId));
-        _host.RegisterEventType<ExitedEvent>(_ => OnExited?.Invoke());
-        _host.RegisterEventType<TerminatedEvent>(_ => OnExited?.Invoke());
+        _host.RegisterEventType<ExitedEvent>(e => OnExited?.Invoke(e.ExitCode));
+        // Sent after exited and carrying no code of its own, so it reports the exit without claiming
+        // to know how it ended
+        _host.RegisterEventType<TerminatedEvent>(_ => OnExited?.Invoke(null));
+        _host.RegisterEventType<ProcessEvent>(OnProcessEvent);
         _host.RegisterEventType<OutputEvent>(OnOutputEvent);
         _host.RegisterEventType<BreakpointEvent>(OnBreakpointEvent);
 
@@ -398,6 +414,16 @@ internal sealed class DapDebugger : IDisposable
                 b.Line,
                 b.Source?.Path))
             .ToList() ?? [];
+    }
+
+    /// <summary>
+    /// SystemProcessId is optional in the protocol, so an event without one is passed over rather
+    /// than reported as pid 0.
+    /// </summary>
+    private void OnProcessEvent(ProcessEvent started)
+    {
+        if (started.SystemProcessId is { } processId)
+            OnProcessStarted?.Invoke(processId);
     }
 
     private void OnStoppedEvent(StoppedEvent stopped) =>

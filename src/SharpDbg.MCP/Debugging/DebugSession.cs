@@ -56,7 +56,9 @@ public class DebugSession : IDisposable
     private DapDebugger? _debugger;
     private SessionPhase _phase = SessionPhase.Idle;
     private string? _launchedProgram;
-    private int? _attachedProcessId;
+    private int? _processId;
+    // Only ever set for a program this session launched, see OnDebuggerExited
+    private int? _exitCode;
     private bool _disposed;
     private bool _isRunning;
     // Outcome of the last teardown, kept because Dispose cannot return one and close_session has
@@ -141,16 +143,17 @@ public class DebugSession : IDisposable
     }
 
     /// <summary>
-    /// The process being debugged, or null for a launched one: SharpDbg sends no process event, so
-    /// the pid of what it started is never reported to us.
+    /// The process being debugged. Known immediately when attaching, because the caller named it, and
+    /// from the debugger's own process event when this session launched the program - which arrives
+    /// during start, so it is null between launch and start, when no process exists yet.
     /// </summary>
-    public int? AttachedProcessId
+    public int? ProcessId
     {
         get
         {
             lock (_stateLock)
             {
-                return _attachedProcessId;
+                return _processId;
             }
         }
     }
@@ -224,7 +227,7 @@ public class DebugSession : IDisposable
         {
             debugger = TakeOverSession($"Process ID: {processId}", "Attaching");
 
-            _attachedProcessId = processId;
+            _processId = processId;
             _phase = SessionPhase.Live;
             _isRunning = true;
         }
@@ -366,11 +369,13 @@ public class DebugSession : IDisposable
         debugger.OnStopped += OnDebuggerStopped;
         debugger.OnContinued += OnDebuggerContinued;
         debugger.OnExited += OnDebuggerExited;
+        debugger.OnProcessStarted += OnDebuggerProcessStarted;
         debugger.OnOutput += OnDebuggerOutput;
         debugger.OnBreakpointChanged += OnDebuggerBreakpointChanged;
 
         _debugger = debugger;
         _lastBreakpoint = null;
+        _exitCode = null;
         _exceptionsSeen = 0;
         _exceptionsIgnored = 0;
         _output.Clear();
@@ -543,8 +548,16 @@ public class DebugSession : IDisposable
         LogMessage($"Continued on thread {threadId}");
     }
 
-    private void OnDebuggerExited()
+    /// <summary>
+    /// The debuggee has gone. <paramref name="exitCode"/> is null when the code is unknown, and it is
+    /// only kept for a program this session launched: SharpDbg reads the code off the process object
+    /// it holds for a launch, has none for an attach, and sends 0 in that case rather than nothing -
+    /// so on an attach the wire cannot tell "exited with 0" from "no idea". Ours says "no idea".
+    /// </summary>
+    private void OnDebuggerExited(int? exitCode)
     {
+        int? recorded;
+
         lock (_stateLock)
         {
             _isRunning = false;
@@ -553,10 +566,38 @@ public class DebugSession : IDisposable
             // A dead process is not running, so it satisfies WaitForStop. Naming the reason keeps
             // that from looking like a stop the caller can step or continue from.
             _lastStopReason = "exited";
+
+            // The terminate that follows an exit carries no code, so a null must not erase the one
+            // the exit already gave us
+            if (exitCode is not null && _launchedProgram is not null)
+                _exitCode = exitCode;
+
+            recorded = _exitCode;
         }
 
-        McpLogger.LogDebugSessionEvent(_sessionId, "Exited", "Process terminated");
+        McpLogger.LogDebugSessionEvent(_sessionId, "Exited",
+            recorded is { } code ? $"Process exited with {code}" : "Process terminated");
         LogMessage("Process exited");
+    }
+
+    /// <summary>
+    /// The pid of the program this session launched, which the debugger only knows once it has
+    /// started it. Ignored after a teardown, so a late event cannot revive a released session.
+    /// </summary>
+    private void OnDebuggerProcessStarted(int processId)
+    {
+        bool recorded;
+
+        lock (_stateLock)
+        {
+            recorded = _phase != SessionPhase.Idle;
+
+            if (recorded)
+                _processId = processId;
+        }
+
+        if (recorded)
+            McpLogger.LogDebugSessionEvent(_sessionId, "ProcessStarted", $"Process {processId}");
     }
 
     private void OnDebuggerOutput(string message, bool isError)
@@ -644,7 +685,7 @@ public class DebugSession : IDisposable
             return new ExecutionState(
                 _phase == SessionPhase.Live && _isRunning,
                 _phase != SessionPhase.Idle,
-                _attachedProcessId,
+                _processId,
                 _currentLocation,
                 _lastBreakpoint,
                 _lastStoppedThreadId,
@@ -652,7 +693,8 @@ public class DebugSession : IDisposable
                 _exceptionsSeen,
                 _exceptionsIgnored,
                 _launchedProgram,
-                _phase != SessionPhase.Prepared);
+                _phase != SessionPhase.Prepared,
+                _exitCode);
         }
     }
 
@@ -1373,7 +1415,7 @@ public class DebugSession : IDisposable
         {
             if (_debugger == null)
             {
-                _attachedProcessId = null;
+                _processId = null;
                 _launchedProgram = null;
                 _phase = SessionPhase.Idle;
 
@@ -1390,11 +1432,12 @@ public class DebugSession : IDisposable
             debuggerToRelease.OnStopped -= OnDebuggerStopped;
             debuggerToRelease.OnContinued -= OnDebuggerContinued;
             debuggerToRelease.OnExited -= OnDebuggerExited;
+            debuggerToRelease.OnProcessStarted -= OnDebuggerProcessStarted;
             debuggerToRelease.OnOutput -= OnDebuggerOutput;
             debuggerToRelease.OnBreakpointChanged -= OnDebuggerBreakpointChanged;
 
             _debugger = null;
-            _attachedProcessId = null;
+            _processId = null;
             _launchedProgram = null;
             _phase = SessionPhase.Idle;
             _isRunning = false;
@@ -1626,7 +1669,8 @@ public record ExecutionState(
     int ExceptionsSeen = 0,
     int ExceptionsIgnored = 0,
     string? LaunchedProgram = null,
-    bool Started = true);
+    bool Started = true,
+    int? ExitCode = null);
 
 /// <summary>
 /// A line the debuggee wrote, and which stream it came out of

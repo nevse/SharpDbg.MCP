@@ -624,8 +624,8 @@ public sealed class DebugSessionIntegrationTests
 
         Assert.AreNotEqual(sessionA.SessionId, sessionB.SessionId);
         Assert.HasCount(2, manager.GetAllSessions());
-        Assert.AreEqual(debuggeeA.ProcessId, sessionA.AttachedProcessId);
-        Assert.AreEqual(debuggeeB.ProcessId, sessionB.AttachedProcessId);
+        Assert.AreEqual(debuggeeA.ProcessId, sessionA.ProcessId);
+        Assert.AreEqual(debuggeeB.ProcessId, sessionB.ProcessId);
 
         var breakpointA = sessionA.SetBreakpoint(TestPaths.TestAppSource, firstLine);
         var breakpointB = sessionB.SetBreakpoint(TestPaths.TestAppSource, secondLine);
@@ -835,6 +835,35 @@ public sealed class DebugSessionIntegrationTests
         // way to find the throw site
         var frames = session.GetStackTrace(state.StoppedThreadId.Value);
         Assert.AreEqual(throwLine, frames[0].Line, $"Top frame should be the throw, frames: {string.Join(", ", frames.Select(f => $"{f.Name}@{f.Line}"))}");
+    }
+
+    /// <summary>
+    /// The exit code of a process we merely attached to is deliberately not reported. SharpDbg reads
+    /// the code off the process object it holds for a launch, has none for an attach, and sends 0 on
+    /// the wire in that case rather than nothing - so the protocol cannot tell "exited with 0" from
+    /// "no idea", and a session that passed it on would be inventing a zero. This holds the
+    /// suppression in place: it is a deliberate null, and the obvious "simplification" undoes it.
+    /// </summary>
+    [TestMethod]
+    public async Task Attach_WhenTheProcessExits_ReportsNoExitCode()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        Assert.AreEqual(debuggee.ProcessId, session.ProcessId);
+
+        // Killed from outside, which is the only way an attached debuggee ends here
+        debuggee.Dispose();
+
+        var exited = DebuggeeProcess.SpinUntil(
+            () => session.GetExecutionState().StopReason == "exited", StopTimeout);
+
+        var state = session.GetExecutionState();
+
+        Assert.IsTrue(exited, $"The debuggee never exited. State: reason={state.StopReason}");
+        Assert.IsNull(state.ExitCode,
+            "An attached process's exit code is unknown, and 0 is what unknown looks like on the wire");
     }
 
     /// <summary>

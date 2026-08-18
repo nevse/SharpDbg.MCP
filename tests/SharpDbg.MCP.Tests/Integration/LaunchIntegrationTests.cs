@@ -225,7 +225,7 @@ public sealed class LaunchIntegrationTests
         await session.Launch(TestPaths.TestAppAssembly);
         session.Start();
 
-        var processId = WaitForReportedProcessId(session);
+        var processId = WaitForPrintedProcessId(session);
 
         // Detaching while the program is running is the case that needs the pause: terminating a
         // running debuggee fails inside ICorDebug and the failure is not reported anywhere.
@@ -267,10 +267,63 @@ public sealed class LaunchIntegrationTests
     }
 
     /// <summary>
-    /// The debuggee prints its own pid, which is the only way a test can find it: SharpDbg sends no
-    /// process event, so what it launched is never named to the client.
+    /// A launched program had no pid to report until SharpDbg 0.1.14: nothing said what had been
+    /// started, so start_program answered with null and a caller had no way to find the process it
+    /// had just created. The pid now arrives as a DAP process event, and it arrives before start
+    /// returns, which is why nothing here waits for it.
     /// </summary>
-    private static int WaitForReportedProcessId(DebugSession session)
+    [TestMethod]
+    public async Task Launch_Start_NamesTheProcessItCreated()
+    {
+        using var session = CreateSession();
+
+        await session.Launch(TestPaths.TestAppAssembly);
+
+        Assert.IsNull(session.ProcessId,
+            "Nothing has been started, so there is no process to name yet");
+
+        session.Start();
+
+        // Read with no spin on purpose. The event arrives while configurationDone is being handled,
+        // so a pid that needed waiting for would be a change in behaviour worth failing on.
+        var reported = session.ProcessId;
+        Assert.IsNotNull(reported, "The debugger never said what it started");
+
+        Assert.AreEqual(WaitForPrintedProcessId(session), reported.Value,
+            "The debugger named a different process than the one it started");
+    }
+
+    /// <summary>
+    /// The exit code, which read as null for every program until SharpDbg 0.1.14 reported it. The
+    /// debuggee is asked for a specific non-zero code, because zero is what a missing code used to
+    /// look like and would pass whether this works or not.
+    /// </summary>
+    [TestMethod]
+    public async Task Launch_WhenTheProgramExits_ReportsTheCodeItReturned()
+    {
+        const int expected = 7;
+
+        using var session = CreateSession();
+
+        await session.Launch(TestPaths.TestAppAssembly, [$"--exit-code={expected}"]);
+        session.Start();
+
+        var exited = DebuggeeProcess.SpinUntil(
+            () => session.GetExecutionState().StopReason == "exited", StopTimeout);
+
+        var state = session.GetExecutionState();
+
+        Assert.IsTrue(exited, $"The program never exited. State: reason={state.StopReason}");
+        Assert.AreEqual(expected, state.ExitCode);
+        Assert.IsFalse(state.IsRunning);
+    }
+
+    /// <summary>
+    /// The pid the debuggee printed for itself. Since SharpDbg 0.1.14 the session knows it too, from
+    /// the debugger's process event, and this is what that can be checked against - the debugger
+    /// naming some process is worth nothing unless it is naming the right one.
+    /// </summary>
+    private static int WaitForPrintedProcessId(DebugSession session)
     {
         string? line = null;
 

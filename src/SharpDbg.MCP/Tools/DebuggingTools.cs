@@ -59,6 +59,12 @@ public sealed class DebuggingTools
         return JsonSerializer.Serialize(response, new JsonSerializerOptions { WriteIndented = true });
     }
 
+    /// <summary>
+    /// " (pid 1234)", or nothing when the debugger never said which process it started. Only used in
+    /// the warnings, where the reader may have to go and find the process by hand.
+    /// </summary>
+    private static string Pid(int? processId) => processId is { } value ? $" (pid {value})" : string.Empty;
+
     private static string OwnerName(ProcessOwnership.Ownership owner) => owner switch
     {
         ProcessOwnership.Ownership.CurrentUser => "current_user",
@@ -170,8 +176,9 @@ public sealed class DebuggingTools
 
     [McpServerTool, Description(
         "Run the program prepared by launch_program. Returns as soon as it is running, which can be " +
-        "after it has already hit a breakpoint; use wait_for_stop to catch that. The process id is " +
-        "not reported: the debugger does not say what it started.")]
+        "after it has already hit a breakpoint; use wait_for_stop to catch that. process_id is the " +
+        "program the debugger started, reported from the moment it exists; it is null if the debugger " +
+        "has not said so yet, and get_process_status has it once it does.")]
     public string StartProgram(int? session_id = null)
     {
         try
@@ -187,6 +194,7 @@ public sealed class DebuggingTools
                 session_id = session.SessionId,
                 program = state.LaunchedProgram,
                 started = true,
+                process_id = state.ProcessId,
                 is_running = state.IsRunning,
                 current_location = state.CurrentLocation,
                 stop_reason = state.StopReason
@@ -237,7 +245,8 @@ public sealed class DebuggingTools
         "Use this after continue_execution or a step instead of polling get_process_status in a " +
         "loop. stopped=false means the process was still running when the wait expired, which is " +
         "not an error - call again to keep waiting. stop_reason 'exited' means the process is gone " +
-        "and cannot be stepped or continued.")]
+        "and cannot be stepped or continued; exit_code is what it returned, and is null for a " +
+        "process attached to rather than launched, whose code the debugger cannot read.")]
     public string WaitForStop(int timeout_ms = 10000, int? session_id = null)
     {
         try
@@ -266,6 +275,7 @@ public sealed class DebuggingTools
                 timeout_ms,
                 current_location = state?.CurrentLocation,
                 stop_reason = state?.StopReason,
+                exit_code = state?.ExitCode,
                 // The thread to pass to get_stack_trace/step_over/step_into/step_out while stopped
                 stopped_thread_id = state?.StoppedThreadId,
                 last_breakpoint = state?.LastBreakpoint == null ? null : new
@@ -443,6 +453,9 @@ public sealed class DebuggingTools
                 is_stopped = state.IsAttached && state.Started && !state.IsRunning,
                 current_location = state.CurrentLocation,
                 stop_reason = state.StopReason,
+                // Null unless a program this session launched has exited. The debugger reads the code
+                // off the process it started and has none for one it merely attached to.
+                exit_code = state.ExitCode,
                 exception_break_mode = session.ExceptionBreakMode.ToString().ToLowerInvariant(),
                 exceptions_seen = state.ExceptionsSeen,
                 exceptions_ignored = state.ExceptionsIgnored,
@@ -521,7 +534,7 @@ public sealed class DebuggingTools
             // Resolve first so closing an id that does not exist says so, rather than quietly doing
             // nothing
             var session = _sessionManager.Resolve(session_id);
-            var processId = session.AttachedProcessId;
+            var processId = session.ProcessId;
             var launchedProgram = session.LaunchedProgram;
             // Read before the close, which resets the phase. A launched program that was never
             // started has no process, so nothing is killed and saying so would be wrong.
@@ -536,17 +549,23 @@ public sealed class DebuggingTools
                 // A launched program the teardown could not account for may have survived it, and
                 // nothing downstream can tell from the message alone
                 program_may_be_running = launchedProgram != null && hasStarted && !released,
-                message = (processId, launchedProgram, hasStarted, released) switch
+                // A launched program is matched before the pid, and that order matters: since SharpDbg
+                // started reporting what it launched, such a session has a pid too, and testing the
+                // pid first would describe a program we killed as a process we detached from. The pid
+                // is named in the two warnings, because a program that may have survived is one the
+                // caller now has to go and look for.
+                message = (launchedProgram, hasStarted, processId, released) switch
                 {
-                    (not null, _, _, true) => $"Session {session_id} closed and detached from process {processId.Value}",
-                    (not null, _, _, false) =>
+                    (not null, true, _, true) => $"Session {session_id} closed and {launchedProgram} killed",
+                    (not null, true, var pid, false) =>
+                        $"Session {session_id} closed, but the debugger never confirmed terminating "
+                        + $"{launchedProgram}{Pid(pid)}, which may still be running",
+                    (not null, false, _, _) => $"Session {session_id} closed, {launchedProgram} was never started",
+                    (null, _, not null, true) =>
+                        $"Session {session_id} closed and detached from process {processId.Value}",
+                    (null, _, not null, false) =>
                         $"Session {session_id} closed, but the debugger never confirmed releasing process "
                         + $"{processId.Value}, which may still be suspended",
-                    (_, not null, true, true) => $"Session {session_id} closed and {launchedProgram} killed",
-                    (_, not null, true, false) =>
-                        $"Session {session_id} closed, but the debugger never confirmed terminating "
-                        + $"{launchedProgram}, which may still be running",
-                    (_, not null, false, _) => $"Session {session_id} closed, {launchedProgram} was never started",
                     _ => $"Session {session_id} closed"
                 }
             };
@@ -584,7 +603,7 @@ public sealed class DebuggingTools
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
 
-            var processId = session.AttachedProcessId;
+            var processId = session.ProcessId;
             var launchedProgram = session.LaunchedProgram;
             // Read before the detach, which resets the phase. A launched program that was never
             // started has no process, so nothing is killed and saying so would be wrong.
@@ -602,7 +621,8 @@ public sealed class DebuggingTools
                 {
                     (not null, true, true) => $"Killed {launchedProgram}",
                     (not null, true, false) =>
-                        $"The debugger never confirmed terminating {launchedProgram}, which may still be running",
+                        $"The debugger never confirmed terminating {launchedProgram}{Pid(processId)}, "
+                        + "which may still be running",
                     (not null, false, _) => $"Discarded {launchedProgram}, which was never started",
                     (null, _, true) => $"Successfully detached from process {processId}",
                     _ => $"The debugger never confirmed releasing process {processId}, which may still be suspended"

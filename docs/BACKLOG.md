@@ -7,15 +7,18 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 Defects in SharpDbg and one in the .NET debugger shim limit what this server can do.
 
-Short version, on SharpDbg 0.1.13: exception stops cannot be filtered by type or handled-ness, a
-launched program reports no exit code, and the test suite is occasionally killed by a crash inside
-`libmscordbi` during attach - the last is a .NET runtime bug rather than a SharpDbg one. Stepping into
-code without symbols, hits on a just-replaced breakpoint, and terminating a running debuggee all used
-to belong here; all three are fixed upstream.
+Short version, on SharpDbg 0.1.14: exception stops cannot be filtered by type or handled-ness, and the
+test suite is occasionally killed by a crash inside `libmscordbi` during attach - that one is a .NET
+runtime bug rather than a SharpDbg one. Stepping into code without symbols, hits on a just-replaced
+breakpoint, terminating a running debuggee, and the pid and exit code of a launched program all used to
+belong here; every one of them is fixed upstream and in the version we build against.
 
-A launched program's process id is fixed upstream too, as a DAP `process` event, but is **not yet
-released**. When it ships, `start_program` can report the pid instead of saying the debugger never
-says what it started.
+The pid and the exit code shipped in 0.1.14 and are wired through: `start_program` names the process it
+created, and `get_process_status` reports how a launched program ended. An **attached** process still
+has no exit code, and that is a limit of the debugger rather than something waiting on a release: it
+reads the code off a process it started itself, has none for one it was merely pointed at, and the
+protocol cannot say "unknown" - only `0`, which would be a number invented here. Null is the honest
+answer.
 
 The replaced-breakpoint freeze went upstream in two halves: the recovery as
 [#27](https://github.com/MattParkerDev/sharpdbg/pull/27), which landed in 0.1.10, and the throw in

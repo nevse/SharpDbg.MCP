@@ -7,7 +7,7 @@ namespace SharpDbg.MCP.TestApp;
 /// </summary>
 internal static class Program
 {
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
         // Named so a test can tell a managed thread name from the id SharpDbg used to report in its
         // place. Naming the thread we already have keeps the thread list the same shape. The tests
@@ -19,6 +19,12 @@ internal static class Program
 
         Console.WriteLine($"PID={Environment.ProcessId}"); // STARTUP-TARGET
         Console.Out.Flush();
+
+        // Exits instead of looping, so a test can compare the code the debugger reports against the
+        // one the program actually returned. Read after the pid is printed, which is what lets a test
+        // find the process either way.
+        if (ExitCodeArgument(args) is { } requested)
+            return requested;
 
         var counter = 0;
         while (true)
@@ -32,6 +38,18 @@ internal static class Program
             Console.Out.Flush();
             Thread.Sleep(150);
         }
+    }
+
+    /// <summary>
+    /// The code asked for by --exit-code=N, or null to run as usual
+    /// </summary>
+    private static int? ExitCodeArgument(string[] args)
+    {
+        const string Flag = "--exit-code=";
+
+        var argument = args.FirstOrDefault(a => a.StartsWith(Flag, StringComparison.Ordinal));
+
+        return argument is null ? null : int.Parse(argument[Flag.Length..]);
     }
 
     /// <summary>

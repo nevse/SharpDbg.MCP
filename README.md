@@ -32,10 +32,11 @@ Some of these need changes in the underlying debugger rather than here.
   have handled the exception, so breaking on throws is all or nothing.
 - **Filter exception breaks by type.** The stop carries no type, so there is nothing to filter on
   before stopping. `get_exception_info` reads the type once stopped, which is after the fact.
-- **Report the process id of a launched program.** It is `null` for a session created by
-  `launch_program`, because the debugger reports nothing about the process it starts.
-- **Report the exit code of a launched program.** It always reads as `0`, whatever the program
-  returned.
+- **Report the exit code of a process it attached to.** `exit_code` is `null` there. The debugger
+  reads the code off a process it started itself and has none for one it was pointed at, so for an
+  attached process there is nothing to report — and the protocol cannot say "unknown", only `0`,
+  which would be a number this server made up. A program started with `launch_program` does report
+  its real code.
 - **Debug a self-contained single-file publish.** The runtime is packed inside the executable, so the
   debugger shim cannot find it to load the matching components. The attempt fails immediately with
   `CORDBG_E_DEBUG_COMPONENT_MISSING` (`0x80131C3C`), reported as
