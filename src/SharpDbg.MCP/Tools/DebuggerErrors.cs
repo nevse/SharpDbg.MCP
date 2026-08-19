@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-using ICorDebugSharp;
+using DotNet.Debugging.CorApi;
 
 namespace SharpDbg.MCP.Tools;
 
@@ -10,7 +10,7 @@ namespace SharpDbg.MCP.Tools;
 /// Turns ICorDebug failures into something a caller can act on. Without this the client only sees
 /// the raw COM text - "Returned from a call to Continue that was not matched with a stopping event.
 /// (0x8013132F)" - which describes the symptom and nothing about what to do next.
-/// The HRESULT values come from ICorDebugSharp's own constants rather than being written out here.
+/// The HRESULT values come from the debugger's own Cor constants rather than being written out here.
 /// </summary>
 public static partial class DebuggerErrors
 {

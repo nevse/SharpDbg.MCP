@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
-using ICorDebugSharp;
+using DotNet.Debugging.CorApi;
 
 using SharpDbg.MCP.Tools;
 

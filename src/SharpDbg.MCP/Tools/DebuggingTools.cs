@@ -296,24 +296,36 @@ public sealed class DebuggingTools
     }
 
     [McpServerTool, Description(
-        "Control what happens when the debuggee throws. The debugger stops on every first-chance " +
-        "exception, including ones the program catches itself, so a program that uses exceptions " +
-        "routinely suspends constantly. " +
-        "mode 'always' (the default) keeps those stops - stop_reason is 'exception', and " +
-        "get_stack_trace on stopped_thread_id shows where it was thrown. " +
-        "mode 'never' resumes them automatically, which is what you want when hunting something " +
-        "else in a program whose own exceptions are noise. " +
-        "There is no mode for unhandled exceptions only, and no filtering by exception type: the " +
-        "debugger reports neither the type nor whether the program will handle it without running " +
-        "code in the target, which currently leaves the process unable to resume.")]
-    public string SetExceptionBreakMode(string mode, int? session_id = null)
+        "Control which exceptions suspend the debuggee. " +
+        "mode 'always' (the default) stops on every throw, including ones the program catches itself, " +
+        "so a program that uses exceptions routinely suspends constantly. " +
+        "mode 'user_unhandled' stops only on exceptions that escape your own code, which is what a " +
+        "debugger normally defaults to and usually what you want. " +
+        "mode 'unhandled' stops only on exceptions that go on to kill the program - the cheapest quiet " +
+        "mode, since a crash cannot be hidden and nothing else is reported or resumed. " +
+        "mode 'never' reports nothing at all and resumes every stop, which costs a round trip per " +
+        "exception and is worth it only for exceptions_seen and exceptions_ignored: they are the sole " +
+        "sign that a program is throwing steadily behind a mode that shows nothing. " +
+        "Narrow 'always' or 'user_unhandled' to particular exception types with exception_types, one " +
+        "fully-qualified name per entry - 'System.IO.IOException', matched exactly, not by suffix. Set " +
+        "types_are_excluded to stop on everything except those instead. The list is one way or the " +
+        "other, never both at once, which is the debugger's rule. " +
+        "The two quiet modes take no types, because they report nothing to filter. " +
+        "Changing mode takes effect at once, and releases an exception stop already in progress if the " +
+        "new mode hides it.")]
+    public string SetExceptionBreakMode(
+        string mode,
+        string[]? exception_types = null,
+        bool types_are_excluded = false,
+        int? session_id = null)
     {
         try
         {
             var parsed = InputValidation.ParseExceptionBreakMode(mode);
+            InputValidation.ValidateExceptionTypes(exception_types, parsed);
 
             var session = _sessionManager.Resolve(session_id);
-            session.ExceptionBreakMode = parsed;
+            session.SetExceptionBreakMode(parsed, exception_types, types_are_excluded);
 
             var state = session.GetExecutionState();
 
@@ -321,7 +333,13 @@ public sealed class DebuggingTools
             {
                 success = true,
                 session_id = session.SessionId,
-                mode = parsed.ToString().ToLowerInvariant(),
+                mode = parsed.ToString().ToLowerInvariant() switch
+                {
+                    "userunhandled" => "user_unhandled",
+                    var other => other
+                },
+                exception_types = session.ExceptionTypes,
+                types_are_excluded = session.ExceptionTypesAreExcluded,
                 exceptions_seen = state.ExceptionsSeen,
                 exceptions_ignored = state.ExceptionsIgnored
             };
@@ -456,7 +474,16 @@ public sealed class DebuggingTools
                 // Null unless a program this session launched has exited. The debugger reads the code
                 // off the process it started and has none for one it merely attached to.
                 exit_code = state.ExitCode,
-                exception_break_mode = session.ExceptionBreakMode.ToString().ToLowerInvariant(),
+                // The debugger is a separate process behind this server. Reported because a caller
+                // that sees it stop answering has no other way to find out which process to inspect.
+                debug_adapter_process_id = session.AdapterProcessId,
+                exception_break_mode = session.ExceptionBreakMode.ToString().ToLowerInvariant() switch
+                {
+                    "userunhandled" => "user_unhandled",
+                    var other => other
+                },
+                exception_types = session.ExceptionTypes,
+                exception_types_are_excluded = session.ExceptionTypesAreExcluded,
                 exceptions_seen = state.ExceptionsSeen,
                 exceptions_ignored = state.ExceptionsIgnored,
                 // The thread to pass to get_stack_trace/step_over/step_into/step_out while stopped
@@ -1085,6 +1112,22 @@ public sealed class DebuggingTools
                     error = "Not attached to a process. Use attach_to_process first."
                 };
                 return JsonSerializer.Serialize(notAttachedResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            // Reported rather than sent: the debugger refuses a pause it cannot act on, so asking
+            // for one here would spend the operation timeout on retries and end in an error over a
+            // program that is in the state the caller wanted it in.
+            if (!session.GetExecutionState().IsRunning)
+            {
+                var alreadyStoppedResponse = new
+                {
+                    success = true,
+                    session_id = session.SessionId,
+                    already_stopped = true,
+                    message = "The program was already stopped, so nothing was sent. Use "
+                        + "get_process_status to see where it is."
+                };
+                return JsonSerializer.Serialize(alreadyStoppedResponse, new JsonSerializerOptions { WriteIndented = true });
             }
 
             // False is not a failure: the adapter has not answered yet, and the pause may still

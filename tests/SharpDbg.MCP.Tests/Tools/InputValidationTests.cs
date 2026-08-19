@@ -227,7 +227,7 @@ public class InputValidationTests
     public void ParseExceptionBreakMode_UnknownMode_ThrowsInsteadOfDefaulting()
     {
         // Falling back to a default would silently change whether the debuggee stops
-        foreach (var mode in new[] { "", "  ", "unhandled", "sometimes" })
+        foreach (var mode in new[] { "", "  ", "sometimes", "user-unhandled", "unhandled only" })
         {
             try
             {
@@ -236,6 +236,22 @@ public class InputValidationTests
             }
             catch (ArgumentException) { }
         }
+    }
+
+    /// <summary>
+    /// The four the debugger can actually distinguish. 'unhandled' was refused here until the move off
+    /// SharpDbg, whose stops carried no way to tell a handled exception from one that kills the program.
+    /// </summary>
+    [TestMethod]
+    public void ParseExceptionBreakMode_AcceptsEveryModeTheDebuggerSupports()
+    {
+        Assert.AreEqual(ExceptionBreakMode.Always, InputValidation.ParseExceptionBreakMode("always"));
+        Assert.AreEqual(ExceptionBreakMode.UserUnhandled, InputValidation.ParseExceptionBreakMode("user_unhandled"));
+        Assert.AreEqual(ExceptionBreakMode.Unhandled, InputValidation.ParseExceptionBreakMode("unhandled"));
+        Assert.AreEqual(ExceptionBreakMode.Never, InputValidation.ParseExceptionBreakMode("never"));
+
+        // Case and padding are the caller's, not ours
+        Assert.AreEqual(ExceptionBreakMode.UserUnhandled, InputValidation.ParseExceptionBreakMode("  USER_Unhandled "));
     }
 
     [TestMethod]

@@ -3,6 +3,10 @@
 A release is a git tag and a GitHub Release. The `package` job in `ci.yml` does the rest: it reads
 the version from the tag, stamps it into `.mcp/server.json`, packs, and pushes to nuget.org.
 
+The package carries the debug adapter, built from the `external/clrdbg` submodule during the pack, so
+every job in `ci.yml` checks the repository out with `submodules: true`. A checkout without them fails
+the build rather than shipping a package with no debugger in it.
+
 Nothing here holds a NuGet API key. Publishing uses
 [trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing): the
 workflow asks GitHub for an OIDC token, nuget.org validates it against a policy naming this

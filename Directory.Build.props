@@ -10,12 +10,18 @@
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
 
-    <!-- Build against a clone of https://github.com/MattParkerDev/sharpdbg instead of the package,
-         for diagnosing upstream defects. Set the path to the clone as an
-         environment variable or on the command line:
-           dotnet build -p:SharpDbgSourcePath=/path/to/sharpdbg
-         Unset, everything builds against the SharpDbg version in Directory.Packages.props. -->
-    <UseLocalSharpDbg Condition="'$(SharpDbgSourcePath)' != ''">true</UseLocalSharpDbg>
+    <!-- The debugger, https://github.com/JaneySprings/clrdbg, referenced as source: it publishes no
+         package, so there is nothing to restore and the checkout is the dependency.
+
+         The default is the submodule, which tracks upstream and is what CI builds. Fixes to the
+         debugger are made in a clone of our fork instead, and this switches the build over to it -
+         as an environment variable, so it applies to every command in a shell rather than being
+         repeated on each one:
+           export ClrdbgSourcePath=/Users/nevse/work/projects/clrdbg
+         or for one command:
+           dotnet build -p:ClrdbgSourcePath=/path/to/clrdbg
+         Unset, everything builds against the pinned submodule. -->
+    <ClrdbgSourcePath Condition="'$(ClrdbgSourcePath)' == ''">$(MSBuildThisFileDirectory)external/clrdbg</ClrdbgSourcePath>
 
     <!-- Repository and package metadata -->
     <Authors>SharpDbg MCP Contributors</Authors>

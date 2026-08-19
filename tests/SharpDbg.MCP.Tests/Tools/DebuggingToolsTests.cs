@@ -129,9 +129,46 @@ public class DebuggingToolsTests
     [TestMethod]
     public void SetExceptionBreakMode_WithAnUnknownMode_NamesTheValidOnes()
     {
-        var error = Error(Tools().SetExceptionBreakMode("unhandled"));
+        var error = Error(Tools().SetExceptionBreakMode("sometimes"));
 
-        Assert.Contains("'always' or 'never'", error);
+        Assert.Contains("'always', 'user_unhandled', 'unhandled' or 'never'", error);
+    }
+
+    /// <summary>
+    /// The two quiet modes report no exception, so a type list for them would silently do nothing.
+    /// </summary>
+    [TestMethod]
+    public void SetExceptionBreakMode_WithTypesForAQuietMode_IsRejected()
+    {
+        var error = Error(Tools().SetExceptionBreakMode("unhandled", ["System.FormatException"]));
+
+        Assert.Contains("cannot be used with mode 'unhandled'", error);
+    }
+
+    /// <summary>
+    /// The debugger's filter is a comma-separated list with a leading '!' for exclusions, so a name
+    /// carrying either would change what the list means rather than be matched.
+    /// </summary>
+    [TestMethod]
+    public void SetExceptionBreakMode_WithACommaInAType_IsRejected()
+    {
+        var error = Error(Tools().SetExceptionBreakMode("always", ["System.IOException,System.FormatException"]));
+
+        Assert.Contains("one per entry", error);
+    }
+
+    [TestMethod]
+    public void SetExceptionBreakMode_WithALeadingBangInAType_PointsAtTheFlag()
+    {
+        var error = Error(Tools().SetExceptionBreakMode("always", ["!System.FormatException"]));
+
+        Assert.Contains("types_are_excluded", error);
+    }
+
+    [TestMethod]
+    public void SetExceptionBreakMode_WithAnEmptyType_IsRejected()
+    {
+        Assert.Contains("cannot be empty", Error(Tools().SetExceptionBreakMode("always", ["  "])));
     }
 
     [TestMethod]

@@ -73,16 +73,16 @@ public class DebugSession : IDisposable
     private IReadOnlyList<int>? _lastHitAdapterIds;
     private BreakpointHitInfo? _lastBreakpoint;
     private ExceptionBreakMode _exceptionBreakMode = ExceptionBreakMode.Always;
+    private IReadOnlyList<string> _exceptionTypes = [];
+    private bool _exceptionTypesAreExcluded;
     private int _exceptionsSeen;
     private int _exceptionsIgnored;
 
     public int SessionId => _sessionId;
 
     /// <summary>
-    /// Whether first-chance exceptions suspend the debuggee (Always, the debugger's own behaviour)
-    /// or are resumed by the session (Never). There is no mode for unhandled exceptions only:
-    /// ManagedDebugger does not pass on the callback's event type, so a stop carries no way to tell
-    /// whether the program is going to handle the exception.
+    /// Which exceptions suspend the debuggee. See <see cref="SetExceptionBreakMode"/> for what each
+    /// mode means and what it costs.
     /// </summary>
     public ExceptionBreakMode ExceptionBreakMode
     {
@@ -93,38 +93,135 @@ public class DebugSession : IDisposable
                 return _exceptionBreakMode;
             }
         }
-        set
-        {
-            bool resumeNow;
-            int threadId;
+    }
 
+    /// <summary>
+    /// The exception types the current mode is narrowed to, empty when it is not narrowed at all, and
+    /// <see cref="ExceptionTypesAreExcluded"/> for which way round the list reads.
+    /// </summary>
+    public IReadOnlyList<string> ExceptionTypes
+    {
+        get
+        {
             lock (_stateLock)
             {
-                _exceptionBreakMode = value;
-
-                // Switching to Never while already stopped on an exception has to release that stop
-                resumeNow = value == ExceptionBreakMode.Never
-                    && !_isRunning
-                    && _lastStopReason == ExceptionStopReason
-                    && _phase == SessionPhase.Live;
-
-                threadId = _lastStoppedThreadId ?? 0;
-
-                if (resumeNow)
-                {
-                    // Unpublished for the same reason a new one would be: in this mode an exception
-                    // stop is not something a caller should be able to see
-                    _exceptionsIgnored++;
-                    _isRunning = true;
-                    ClearStopState();
-                }
+                return _exceptionTypes;
             }
+        }
+    }
 
-            McpLogger.LogDebugSessionEvent(_sessionId, "ExceptionBreakMode", value.ToString());
+    /// <summary>
+    /// Whether <see cref="ExceptionTypes"/> lists the types to stop on or the types to let through
+    /// </summary>
+    public bool ExceptionTypesAreExcluded
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _exceptionTypesAreExcluded;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Chooses which exceptions suspend the debuggee, optionally narrowed to particular types.
+    ///
+    /// A method rather than a settable property because it talks to the debugger, so it does I/O and can
+    /// fail. The choice is remembered whether or not there is a debuggee yet: set before attaching, it is
+    /// sent as part of the attach.
+    ///
+    /// The modes differ in what reaches the caller and in what they cost:
+    /// <list type="bullet">
+    /// <item>Always - every throw, first-chance included. What the debugger does when asked for "all".</item>
+    /// <item>UserUnhandled - the ones that escape the caller's own code.</item>
+    /// <item>Unhandled - no filters at all, which leaves only exceptions that go on to kill the program.
+    /// A crash cannot be hidden, so this is the cheapest quiet mode: nothing is reported and nothing is
+    /// resumed.</item>
+    /// <item>Never - asks for every throw and resumes each one here. Costs a round trip per exception and
+    /// buys the counts a caller reads from exceptions_seen and exceptions_ignored: told not to report
+    /// them, the debugger would never mention them, and the only sign that a program throws steadily
+    /// behind a mode that hides it would be gone.</item>
+    /// </list>
+    /// </summary>
+    /// <param name="types">
+    /// Fully-qualified exception type names to narrow the mode to, matched exactly. Only meaningful for
+    /// Always and UserUnhandled, the two modes that have a filter to attach them to.
+    /// </param>
+    /// <param name="typesAreExcluded">Whether <paramref name="types"/> is what to stop on or what to skip</param>
+    public void SetExceptionBreakMode(
+        ExceptionBreakMode mode,
+        IReadOnlyList<string>? types = null,
+        bool typesAreExcluded = false)
+    {
+        bool resumeNow;
+        int threadId;
+        DapDebugger? debugger;
+
+        lock (_stateLock)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(DebugSession));
+
+            _exceptionBreakMode = mode;
+            _exceptionTypes = types is null ? [] : [.. types];
+            _exceptionTypesAreExcluded = typesAreExcluded;
+
+            // Switching to a mode that hides exception stops has to release one already in progress
+            resumeNow = mode is ExceptionBreakMode.Never or ExceptionBreakMode.Unhandled
+                && !_isRunning
+                && _lastStopReason == ExceptionStopReason
+                && _phase == SessionPhase.Live;
+
+            threadId = _lastStoppedThreadId ?? 0;
 
             if (resumeNow)
-                ResumeIgnoredException(threadId);
+            {
+                // Unpublished for the same reason a new one would be: in this mode an exception
+                // stop is not something a caller should be able to see
+                _exceptionsIgnored++;
+                _isRunning = true;
+                ClearStopState();
+            }
+
+            debugger = _phase == SessionPhase.Idle ? null : _debugger;
         }
+
+        // Nothing to tell when there is no debuggee: the choice travels with the next attach or launch
+        debugger?.SetExceptionBreakpoints(FiltersFor(mode), TypeConditionFor(mode, types, typesAreExcluded));
+
+        McpLogger.LogDebugSessionEvent(_sessionId, "ExceptionBreakMode", mode.ToString());
+
+        if (resumeNow)
+            ResumeIgnoredException(threadId);
+    }
+
+    /// <summary>
+    /// The debugger's filter names for a mode. Unhandled asks for nothing, which is what leaves only the
+    /// exceptions that no filter covers; Never asks for everything so that it has something to count.
+    /// </summary>
+    private static IReadOnlyList<string> FiltersFor(ExceptionBreakMode mode) => mode switch
+    {
+        ExceptionBreakMode.Always => ["all"],
+        ExceptionBreakMode.Never => ["all"],
+        ExceptionBreakMode.UserUnhandled => ["userUnhandled"],
+        _ => []
+    };
+
+    /// <summary>
+    /// The condition string the debugger wants: a comma-separated list of fully-qualified names, with a
+    /// leading '!' when the list says what to skip rather than what to stop on. Null for a mode with no
+    /// filter to narrow, and for an empty list, which means the mode is not narrowed at all.
+    /// </summary>
+    private static string? TypeConditionFor(
+        ExceptionBreakMode mode,
+        IReadOnlyList<string>? types,
+        bool typesAreExcluded)
+    {
+        if (types is null || types.Count == 0 || FiltersFor(mode).Count == 0)
+            return null;
+
+        return (typesAreExcluded ? "!" : string.Empty) + string.Join(',', types);
     }
 
     /// <summary>
@@ -154,6 +251,23 @@ public class DebugSession : IDisposable
             lock (_stateLock)
             {
                 return _processId;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The debugger's own process, or null when this session has no debugger. It runs as a child of
+    /// this server rather than inside it, which is what keeps a crash in the debugging shim from
+    /// taking the server with it - so when the debugger stops answering, this is the process to look
+    /// at, and the one whose death explains an operation that suddenly started failing.
+    /// </summary>
+    public int? AdapterProcessId
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _debugger?.AdapterProcessId;
             }
         }
     }
@@ -222,10 +336,15 @@ public class DebugSession : IDisposable
     public async Task Attach(int processId)
     {
         DapDebugger debugger;
+        IReadOnlyList<string> filters;
+        string? typeCondition;
 
         lock (_stateLock)
         {
             debugger = TakeOverSession($"Process ID: {processId}", "Attaching");
+
+            filters = FiltersFor(_exceptionBreakMode);
+            typeCondition = TypeConditionFor(_exceptionBreakMode, _exceptionTypes, _exceptionTypesAreExcluded);
 
             _processId = processId;
             _phase = SessionPhase.Live;
@@ -234,7 +353,8 @@ public class DebugSession : IDisposable
 
         try
         {
-            await debugger.Attach(processId, _justMyCode, _operationTimeout);
+            await debugger.Attach(
+                processId, _justMyCode, filters, typeCondition, _operationTimeout);
 
             // The attach is handed to a fire-and-forget task inside the adapter, so the process is
             // still unusable when configurationDone returns. Threads stay empty until the process
@@ -263,10 +383,15 @@ public class DebugSession : IDisposable
         IReadOnlyDictionary<string, string>? environment = null)
     {
         DapDebugger debugger;
+        IReadOnlyList<string> filters;
+        string? typeCondition;
 
         lock (_stateLock)
         {
             debugger = TakeOverSession(program, "Launching");
+
+            filters = FiltersFor(_exceptionBreakMode);
+            typeCondition = TypeConditionFor(_exceptionBreakMode, _exceptionTypes, _exceptionTypesAreExcluded);
 
             _launchedProgram = program;
             _phase = SessionPhase.Prepared;
@@ -281,6 +406,8 @@ public class DebugSession : IDisposable
                 workingDirectory ?? Path.GetDirectoryName(program) ?? Environment.CurrentDirectory,
                 environment ?? new Dictionary<string, string>(),
                 _justMyCode,
+                filters,
+                typeCondition,
                 _operationTimeout);
 
             McpLogger.LogDebugSessionEvent(_sessionId, "Launched", $"{program}, not started yet");
@@ -1288,6 +1415,19 @@ public class DebugSession : IDisposable
     {
         var debugger = RequireLiveDebugger();
 
+        lock (_stateLock)
+        {
+            // There is nothing to break into, and the debugger refuses a pause in this state rather
+            // than answering an empty success. Reading it from here is only trustworthy because of
+            // that refusal: a stop is written from a real stop event or from a pause the debugger
+            // accepted, never from one it quietly skipped.
+            if (!_isRunning)
+            {
+                McpLogger.LogDebugSessionEvent(_sessionId, "Pause", "Already stopped, nothing sent");
+                return true;
+            }
+        }
+
         McpLogger.LogDebugSessionEvent(_sessionId, "Pause", "Breaking execution");
 
         // One deadline covers both requests, so bounding this costs one operation timeout rather
@@ -1300,13 +1440,31 @@ public class DebugSession : IDisposable
         if (StoppedThreadOrFirst(debugger, _operationTimeout) is not { } threadId)
             return false;
 
-        var remaining = deadline - DateTime.UtcNow;
-        if (remaining <= TimeSpan.Zero)
-            return false;
+        // The debugger refuses a pause while the process is not in a state it can be stopped from,
+        // and in a debuggee's first moment that state is ICorDebug misreporting a running program
+        // rather than the truth about it: measured, a pause issued the instant an attach landed was
+        // refused 8 of 15 times, and one issued 750ms later none of 15. It clears on its own, so the
+        // refusal is retried until the deadline, and whatever outlives the deadline reaches the
+        // caller. This replaced a flat one-second hold-off in front of every early pause, which was
+        // the best available while the debugger hid the skipped stop behind a success and so left
+        // nothing to retry on; it says so as of clrdbg af146e5.
+        while (true)
+        {
+            var remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                return false;
 
-        // Stop() is synchronous and raises no stop event of its own, so this is the only thing that
-        // records the stop.
-        return debugger.TryPause(threadId, remaining, MarkPaused);
+            try
+            {
+                // Stop() is synchronous and raises no stop event of its own, so this is the only
+                // thing that records the stop.
+                return debugger.TryPause(threadId, remaining, MarkPaused);
+            }
+            catch (ProtocolException) when (DateTime.UtcNow + PollInterval < deadline)
+            {
+                Thread.Sleep(PollInterval);
+            }
+        }
 
         void MarkPaused()
         {
@@ -1683,14 +1841,30 @@ public record OutputLine(string Text, bool IsError);
 public enum ExceptionBreakMode
 {
     /// <summary>
-    /// Stay stopped on every exception, including ones the program catches itself. This is what
-    /// ManagedDebugger does on its own and stays the default, so nothing is hidden by surprise.
+    /// Stay stopped on every exception, including ones the program catches itself. Stays the default, so
+    /// nothing is hidden by surprise.
     /// </summary>
     Always,
 
     /// <summary>
-    /// Resume the debuggee whenever it stops on an exception, so a program that throws routinely
-    /// can be debugged with breakpoints without being interrupted by its own caught exceptions.
+    /// Stop only on exceptions that escape the caller's own code, which is what a debugger usually
+    /// defaults to. Requires the debugger to classify the throw, which it does from the callback's own
+    /// event type.
+    /// </summary>
+    UserUnhandled,
+
+    /// <summary>
+    /// Stop only on exceptions that go on to kill the program. Those stop it whatever is asked, so this
+    /// is the quiet mode that costs nothing: no filter is sent, nothing is reported and nothing is
+    /// resumed.
+    /// </summary>
+    Unhandled,
+
+    /// <summary>
+    /// Report no exception stop at all, resuming each one here, so a program that throws routinely can be
+    /// debugged with breakpoints without being interrupted by its own caught exceptions. Unlike
+    /// Unhandled it keeps asking for every throw, which is what makes exceptions_seen and
+    /// exceptions_ignored mean anything in a mode that shows nothing.
     /// </summary>
     Never
 }
