@@ -712,10 +712,12 @@ public sealed class DebugSessionIntegrationTests
         // Closing a session releases its debuggee and frees the slot
         manager.CloseSession(sessionB.SessionId);
         Assert.HasCount(1, manager.GetAllSessions());
-        Assert.IsGreaterThan(
-            0,
-            debuggeeB.CountOutputDuring(TimeSpan.FromSeconds(2)),
-            "Closing the session left its debuggee suspended");
+        if (debuggeeB.CountOutputDuring(TimeSpan.FromSeconds(2)) == 0)
+        {
+            Assert.Fail(
+                "Closing the session left its debuggee suspended; it "
+                + debuggeeB.DescribeResumption(TimeSpan.FromSeconds(15)));
+        }
     }
 
     /// <summary>
@@ -1126,12 +1128,20 @@ public sealed class DebugSessionIntegrationTests
         await session.Attach(debuggee.ProcessId);
 
         // Every iteration throws, so an unresumed exception stop would show up as silence here
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
-            "Debuggee stayed suspended on an exception that should have been resumed");
-
+        var printed = debuggee.CountOutputDuring(TimeSpan.FromSeconds(2));
         var state = session.GetExecutionState();
+
+        // The state belongs in the message rather than in a later assertion, because silence has two
+        // very different causes: a session that knows it is stopped never sent the resume, while one
+        // that believes the program runs was told the resume landed when it did not.
+        if (printed == 0)
+        {
+            Assert.Fail(
+                "Debuggee stayed suspended on an exception that should have been resumed. The session "
+                + $"says running={state.IsRunning}, reason={state.StopReason ?? "none"}, "
+                + $"seen={state.ExceptionsSeen}, ignored={state.ExceptionsIgnored}; the debuggee "
+                + debuggee.DescribeResumption(TimeSpan.FromSeconds(15)));
+        }
         Assert.IsTrue(state.IsRunning, $"Session reports stopped: reason={state.StopReason}");
         Assert.IsGreaterThan(0, state.ExceptionsSeen, "The debuggee did throw, so the stops must have been counted");
         Assert.IsGreaterThan(0, state.ExceptionsIgnored);

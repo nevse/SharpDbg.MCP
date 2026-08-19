@@ -113,6 +113,22 @@ internal sealed class DebuggeeProcess : IDisposable
         return OutputLines - before;
     }
 
+    /// <summary>
+    /// How long the debuggee took to print again, for a failure that has to say which of two things
+    /// went wrong: a resume that was merely slow - a Windows runner pays a DAP round trip for every
+    /// exception in some modes - or one that never arrived. Returns null when nothing was printed
+    /// within the timeout.
+    /// </summary>
+    public string DescribeResumption(TimeSpan timeout)
+    {
+        var before = OutputLines;
+        var started = DateTime.UtcNow;
+
+        return SpinUntil(() => OutputLines > before, timeout)
+            ? $"printed again after a further {(DateTime.UtcNow - started).TotalSeconds:0.0}s"
+            : $"printed nothing for a further {timeout.TotalSeconds:0}s";
+    }
+
     public static bool SpinUntil(Func<bool> condition, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
