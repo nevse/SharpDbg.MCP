@@ -1,6 +1,6 @@
-# SharpDbg MCP Server Examples
+# DotnetDebugger.Mcp Examples
 
-This directory contains examples and templates for extending the SharpDbg MCP Server.
+This directory contains examples and templates for extending the DotnetDebugger.Mcp server.
 
 ## Available Examples
 

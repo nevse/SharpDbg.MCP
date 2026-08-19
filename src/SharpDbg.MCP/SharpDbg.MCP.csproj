@@ -2,7 +2,9 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-  </PropertyGroup>
+      <!-- The debug adapter runs as a child process and has to sit beside this output -->
+    <NeedsClrdbgAdapter>true</NeedsClrdbgAdapter>
+</PropertyGroup>
 
   <!-- Shipped as a .NET tool, so `dnx DotnetDebugger.Mcp` and `dotnet tool exec` both run it with
        no path in the client's configuration. One RID-agnostic package covers every platform: the
@@ -37,23 +39,17 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="ModelContextProtocol" />
 
-    <!-- Debugging Infrastructure. SharpDbgSourcePath swaps the package for a source clone,
-         see Directory.Build.props -->
-    <PackageReference Include="SharpDbg" Condition="'$(UseLocalSharpDbg)' != 'true'" />
-    <!-- All three, because SharpDbg.InMemory marks its own project references PrivateAssets="all",
-         so referencing it alone brings neither the adapter nor the debugger -->
-    <ProjectReference Include="$(SharpDbgSourcePath)\src\SharpDbg.InMemory\SharpDbg.InMemory.csproj"
-                      Condition="'$(UseLocalSharpDbg)' == 'true'" />
-    <ProjectReference Include="$(SharpDbgSourcePath)\src\SharpDbg.Application\SharpDbg.Application.csproj"
-                      Condition="'$(UseLocalSharpDbg)' == 'true'" />
-    <ProjectReference Include="$(SharpDbgSourcePath)\src\SharpDbg.Infrastructure\SharpDbg.Infrastructure.csproj"
-                      Condition="'$(UseLocalSharpDbg)' == 'true'" />
-    <!-- Only the SharpDbg packaging project declares these, so a source reference has to bring them
-         along: without the native shim every attach fails inside ClrDebugExtensions, and the protocol
-         types are what the adapter is spoken to with -->
-    <PackageReference Include="Microsoft.Diagnostics.DbgShim" Condition="'$(UseLocalSharpDbg)' == 'true'" />
-    <PackageReference Include="Microsoft.VisualStudio.Shared.VSCodeDebugProtocol"
-                      Condition="'$(UseLocalSharpDbg)' == 'true'" />
+    <!-- Debugging infrastructure: clrdbg, built from source. It publishes no package, so there is no
+         PackageReference form of this - ClrdbgSourcePath says where the checkout is, see
+         Directory.Build.props.
+         The debugger runs as a child process, so none of its code is linked in - see
+         ChildProcessDebugAdapter, and the BuildClrdbgAdapter target that builds the binary.
+         This one reference is the exception: the HRESULT constants DebuggerErrors explains. They are
+         const, so the compiler bakes the values in and nothing of CorApi is needed at run time. -->
+    <ProjectReference Include="$(ClrdbgSourcePath)\DotNet.Debugging.CorApi\DotNet.Debugging.CorApi.csproj" />
+    <!-- The protocol types are what the adapter is spoken to with, and are ours to bring: clrdbg's
+         own projects reference them without flowing them on -->
+    <PackageReference Include="Microsoft.VisualStudio.Shared.VSCodeDebugProtocol" />
 
     <!-- Markdown parsing for Phase 1 -->
     <PackageReference Include="Markdig" />
@@ -63,5 +59,29 @@
     <!-- Embedded documentation -->
     <EmbeddedResource Include="Data\how_dotnet_debuggers_work.md" />
   </ItemGroup>
+
+
+  <!-- The debug adapter travels inside the package, beside the server, because the server starts it as
+       a child process and looks for it there. Added through TargetsForTfmSpecificBuildOutput rather than
+       as None items: the files do not exist until BuildClrdbgAdapter has run, so they cannot be listed
+       ahead of time.
+
+       The apphost is left out on purpose. It is the one file in that output built for the RID of the
+       machine that packed it, and nothing uses it - the adapter is started as 'dotnet clrdbg.dll', which
+       is also what keeps macOS from refusing the debuggee's task port to an unentitled binary. Leaving
+       it behind is what makes this package genuinely platform-agnostic, the native shim being shipped
+       for every platform at once under runtimes/. -->
+  <PropertyGroup>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);PackClrdbgAdapter</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <Target Name="PackClrdbgAdapter" DependsOnTargets="BuildClrdbgAdapter">
+    <ItemGroup>
+      <TfmSpecificPackageFile Include="$(ClrdbgAdapterOutput)/**/*"
+                              Exclude="$(ClrdbgAdapterOutput)/clrdbg">
+        <PackagePath>tools/$(TargetFramework)/any/clrdbg/%(RecursiveDir)%(Filename)%(Extension)</PackagePath>
+      </TfmSpecificPackageFile>
+    </ItemGroup>
+  </Target>
 
 </Project>

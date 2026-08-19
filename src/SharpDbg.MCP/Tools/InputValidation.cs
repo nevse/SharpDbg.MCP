@@ -163,10 +163,54 @@ public static class InputValidation
         return mode.Trim().ToLowerInvariant() switch
         {
             "always" => ExceptionBreakMode.Always,
+            "user_unhandled" => ExceptionBreakMode.UserUnhandled,
+            "unhandled" => ExceptionBreakMode.Unhandled,
             "never" => ExceptionBreakMode.Never,
             _ => throw new ArgumentException(
-                $"Exception break mode must be 'always' or 'never', got: {mode}", nameof(mode))
+                "Exception break mode must be 'always', 'user_unhandled', 'unhandled' or 'never', got: "
+                + mode, nameof(mode))
         };
+    }
+
+    /// <summary>
+    /// Checks a type filter before it is turned into the debugger's condition string, which is a
+    /// comma-separated list where a leading '!' means the whole list is exclusions. A name carrying
+    /// either character would change the meaning of the list rather than be matched, so both are
+    /// refused here instead of quietly producing a filter that does something else.
+    /// </summary>
+    public static void ValidateExceptionTypes(string[]? exceptionTypes, ExceptionBreakMode mode)
+    {
+        if (exceptionTypes is null || exceptionTypes.Length == 0)
+            return;
+
+        if (mode is ExceptionBreakMode.Unhandled or ExceptionBreakMode.Never)
+        {
+            throw new ArgumentException(
+                $"Exception types cannot be used with mode '{mode.ToString().ToLowerInvariant()}', which "
+                + "reports no exception the caller could filter. Use 'always' or 'user_unhandled'.",
+                nameof(exceptionTypes));
+        }
+
+        foreach (var exceptionType in exceptionTypes)
+        {
+            if (string.IsNullOrWhiteSpace(exceptionType))
+                throw new ArgumentException("An exception type cannot be empty", nameof(exceptionTypes));
+
+            if (exceptionType.Contains(',', StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"Exception types are passed one per entry, not comma-separated: {exceptionType}",
+                    nameof(exceptionTypes));
+            }
+
+            if (exceptionType.TrimStart().StartsWith('!'))
+            {
+                throw new ArgumentException(
+                    "Use types_are_excluded to invert the list rather than a leading '!': "
+                    + exceptionType,
+                    nameof(exceptionTypes));
+            }
+        }
     }
 
     public static void ValidateExpression(string expression)

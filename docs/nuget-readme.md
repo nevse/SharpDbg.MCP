@@ -7,8 +7,9 @@ launches a program under the debugger, sets line and function breakpoints, steps
 the call stack, and evaluates expressions in the target — the same operations a developer performs
 in an IDE, exposed as tools an agent can call.
 
-Built on [SharpDbg](https://github.com/MattParkerDev/sharpdbg), driven through its supported debug
-adapter surface.
+Built on [clrdbg](https://github.com/JaneySprings/clrdbg), driven over the Debug Adapter Protocol. The
+debugger runs as a child process, so a crash in native debugging code costs the debug session rather
+than the server.
 
 ## Requirements
 
@@ -35,8 +36,8 @@ claude mcp add dotnet-debugger -- dotnet tool exec DotnetDebugger.Mcp --yes
 }
 ```
 
-There is no path to fill in and nothing to clone. The package carries the native debugger shim for
-every platform, so the same configuration works on Windows, macOS and Linux.
+There is no path to fill in and nothing to clone. The package carries the debugger and its native
+shims for every platform, so the same configuration works on Windows, macOS and Linux.
 
 `dnx DotnetDebugger.Mcp --yes` is the equivalent shorter form. Prefer `dotnet tool exec` in a client
 launched from a desktop environment: `dnx` lives in the SDK directory, which such a client often does
@@ -74,8 +75,10 @@ diagnostics. They are documented in the
 ## Origin
 
 A fork of [decriptor/SharpDbg.MCP](https://github.com/decriptor/SharpDbg.MCP), rewritten far enough
-to warrant its own name: the debugger layer now runs over the supported DAP surface rather than
-SharpDbg's internal API, and launching a program under the debugger is new.
+to warrant its own name: the debugger layer speaks the Debug Adapter Protocol instead of calling a
+debugger's internal API, the debugger underneath has since changed from
+[SharpDbg](https://github.com/MattParkerDev/sharpdbg) to clrdbg, and launching a program under the
+debugger is new.
 
 MIT licensed. Issues and full documentation:
 [github.com/nevse/dotnet-debugger-mcp](https://github.com/nevse/dotnet-debugger-mcp).

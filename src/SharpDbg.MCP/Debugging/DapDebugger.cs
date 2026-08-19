@@ -3,7 +3,6 @@ using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
 
 using Newtonsoft.Json.Linq;
 
-using SharpDbg.InMemory;
 using SharpDbg.MCP.Logging;
 
 using MSBreakpoint = Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages.Breakpoint;
@@ -21,7 +20,7 @@ namespace SharpDbg.MCP.Debugging;
 internal sealed class DapDebugger : IDisposable
 {
     private readonly DebugProtocolHost _host;
-    private readonly IDisposable _adapter;
+    private readonly ChildProcessDebugAdapter.AdapterProcess _adapter;
     private readonly Action<string>? _logger;
     private readonly TaskCompletionSource _initialized =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -55,11 +54,14 @@ internal sealed class DapDebugger : IDisposable
     public event Action<string, bool>? OnOutput;
     public event Action<AppliedBreakpoint>? OnBreakpointChanged;
 
+    /// <summary>The debugger's own process, which is a child of this one</summary>
+    public int AdapterProcessId => _adapter.ProcessId;
+
     public DapDebugger(Action<string>? logger = null)
     {
         _logger = logger;
 
-        var (input, output, adapter) = SharpDbgInMemory.NewDebugAdapterStreams(logger);
+        var (input, output, adapter) = ChildProcessDebugAdapter.Start(logger);
         _adapter = adapter;
         _host = new DebugProtocolHost(input, output, false);
 
@@ -84,7 +86,12 @@ internal sealed class DapDebugger : IDisposable
     /// sent between the last two, which an MCP server cannot do because they arrive as separate tool
     /// calls long afterwards.
     /// </summary>
-    public async Task Attach(int processId, bool justMyCode, TimeSpan timeout)
+    public async Task Attach(
+        int processId,
+        bool justMyCode,
+        IReadOnlyList<string> filters,
+        string? typeCondition,
+        TimeSpan timeout)
     {
         Initialize();
 
@@ -102,6 +109,8 @@ internal sealed class DapDebugger : IDisposable
 
         await _initialized.Task.WaitAsync(timeout).ConfigureAwait(false);
 
+        SetExceptionBreakpoints(filters, typeCondition);
+
         _host.SendRequestSync(new ConfigurationDoneRequest());
     }
 
@@ -117,6 +126,8 @@ internal sealed class DapDebugger : IDisposable
         string workingDirectory,
         IReadOnlyDictionary<string, string> environment,
         bool justMyCode,
+        IReadOnlyList<string> filters,
+        string? typeCondition,
         TimeSpan timeout)
     {
         Initialize();
@@ -138,6 +149,8 @@ internal sealed class DapDebugger : IDisposable
         });
 
         await _initialized.Task.WaitAsync(timeout).ConfigureAwait(false);
+
+        SetExceptionBreakpoints(filters, typeCondition);
     }
 
     /// <summary>
@@ -183,6 +196,35 @@ internal sealed class DapDebugger : IDisposable
                 + "still working on the request.");
 
         completed.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Says which exceptions should suspend the debuggee. Sent on attach and launch, and again whenever
+    /// the caller changes its mind, because the debugger stops on nothing until it is asked to - unlike
+    /// SharpDbg, which broke on every first-chance exception unconditionally and had no way to say
+    /// otherwise.
+    ///
+    /// Two filters exist. "all" covers every throw, first-chance included; "userUnhandled" covers the
+    /// ones that escape the caller's own code. Neither covers a genuinely unhandled exception, which
+    /// stops the program whatever is asked here - a crash cannot be hidden, so sending no filters at all
+    /// is what leaves only those.
+    ///
+    /// <paramref name="typeCondition"/> narrows a filter to particular exception types, and belongs to
+    /// whichever filter is enabled. It is a comma-separated list of fully-qualified names, matched
+    /// exactly, and a leading '!' turns the whole list into exclusions - the two cannot be mixed, which
+    /// is the debugger's own rule rather than ours.
+    /// </summary>
+    public void SetExceptionBreakpoints(IReadOnlyList<string> filters, string? typeCondition)
+    {
+        var request = new SetExceptionBreakpointsRequest { Filters = [.. filters] };
+
+        if (typeCondition is not null)
+        {
+            request.FilterOptions = [.. filters.Select(
+                filter => new ExceptionFilterOptions { FilterId = filter, Condition = typeCondition })];
+        }
+
+        _host.SendRequestSync(request);
     }
 
     private void Initialize() =>
@@ -268,8 +310,26 @@ internal sealed class DapDebugger : IDisposable
         var response = _host.SendRequestSync(new VariablesRequest { VariablesReference = variablesReference });
 
         return response.Variables?
-            .Select(v => new VariableInfo(v.Name, v.Value, v.Type, v.VariablesReference))
+            .Select(v => new VariableInfo(NameWithoutType(v.Name, v.Type), v.Value, v.Type, v.VariablesReference))
             .ToList() ?? [];
+    }
+
+    /// <summary>
+    /// The debugger labels a variable "current [int]", which suits a tree in an editor and not a
+    /// caller that is handed the type in a field of its own. The suffix is only removed when it is
+    /// exactly the reported type in brackets, so a name that genuinely ends in brackets - an array
+    /// element, "[0]" - is left alone.
+    /// </summary>
+    private static string NameWithoutType(string name, string? type)
+    {
+        if (string.IsNullOrEmpty(type))
+            return name;
+
+        var suffix = $" [{type}]";
+
+        return name.EndsWith(suffix, StringComparison.Ordinal)
+            ? name[..^suffix.Length]
+            : name;
     }
 
     public EvaluationResult Evaluate(string expression, int frameId)
@@ -429,12 +489,23 @@ internal sealed class DapDebugger : IDisposable
     private void OnStoppedEvent(StoppedEvent stopped) =>
         OnStopped?.Invoke(stopped.ThreadId ?? 0, ReasonToString(stopped.Reason), stopped.HitBreakpointIds);
 
+    /// <summary>
+    /// Only what the debuggee itself wrote. The debugger reports its own progress through the same
+    /// event under other categories - every module it loads, one line each - and passing that on would
+    /// put it in get_program_output, where a caller reads it as program output and cannot tell the
+    /// difference. An event with no category at all is taken as stdout, which is what it means.
+    /// </summary>
     private void OnOutputEvent(OutputEvent output)
     {
         if (output.Output is null)
             return;
 
-        OnOutput?.Invoke(output.Output, output.Category == OutputEvent.CategoryValue.Stderr);
+        var isError = output.Category == OutputEvent.CategoryValue.Stderr;
+
+        if (!isError && output.Category is not (null or OutputEvent.CategoryValue.Stdout))
+            return;
+
+        OnOutput?.Invoke(output.Output, isError);
     }
 
     private void OnBreakpointEvent(BreakpointEvent breakpointEvent)

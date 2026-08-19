@@ -5,14 +5,17 @@ breakpoints, step through code, inspect variables and evaluate expressions. It a
 searchable reference on how .NET debuggers work internally.
 
 Published on NuGet as [`DotnetDebugger.Mcp`](https://www.nuget.org/packages/DotnetDebugger.Mcp).
-Built on [SharpDbg](https://github.com/MattParkerDev/sharpdbg), driven through its debug adapter
-surface.
+Built on [clrdbg](https://github.com/JaneySprings/clrdbg), driven over the Debug Adapter Protocol. The
+debugger travels inside the package and runs as a child process, so a crash in native debugging code
+costs the debug session rather than the server.
 
 > **Origin.** A fork of [decriptor/SharpDbg.MCP](https://github.com/decriptor/SharpDbg.MCP), now far
-> enough from it to carry its own name: the debugger layer runs over the supported DAP surface rather
-> than SharpDbg's internal API, launching a program under the debugger is new, and the two have not
-> shared a commit since. This repository was called `SharpDbg.MCP` until the first release; GitHub
-> redirects the old name.
+> enough from it to carry its own name: the debugger layer speaks the Debug Adapter Protocol instead of
+> calling a debugger's internal API, the debugger underneath has since changed from
+> [SharpDbg](https://github.com/MattParkerDev/sharpdbg) to clrdbg, launching a program under the
+> debugger is new, and the two have not shared a commit since. This repository was called
+> `SharpDbg.MCP` until the first release; GitHub redirects the old name, and the project files and
+> `SHARPDBG_*` settings still carry it.
 
 ## What it can do
 
@@ -20,7 +23,9 @@ surface.
 - Set breakpoints by file and line or by method name, with conditions and hit counts
 - Step over, into and out of code, and read the call stack for any thread
 - Inspect local variables, expand objects member by member, and evaluate C# expressions
-- Break on exceptions and read what was thrown, and read the debuggee's stdout and stderr
+- Break on exceptions - all of them, only the unhandled ones, or only the types you name - and read
+  what was thrown
+- Read the debuggee's stdout and stderr
 - Debug more than one process at once, each with its own breakpoints and stops
 - Search embedded documentation on ICorDebug, the Debug Adapter Protocol and expression evaluation
 
@@ -28,15 +33,18 @@ surface.
 
 Some of these need changes in the underlying debugger rather than here.
 
-- **Distinguish handled from unhandled exceptions.** A stop does not say whether the program would
-  have handled the exception, so breaking on throws is all or nothing.
-- **Filter exception breaks by type.** The stop carries no type, so there is nothing to filter on
-  before stopping. `get_exception_info` reads the type once stopped, which is after the fact.
 - **Report the exit code of a process it attached to.** `exit_code` is `null` there. The debugger
   reads the code off a process it started itself and has none for one it was pointed at, so for an
   attached process there is nothing to report — and the protocol cannot say "unknown", only `0`,
   which would be a number this server made up. A program started with `launch_program` does report
   its real code.
+- **Report the process id of a program it launched.** `process_id` comes back `null` there, though the
+  program is started and everything else works on it. The debugger sends no DAP `process` event, which
+  is where that number would come from; a process it attached to needs no event, because the caller
+  named it.
+- **Report the `hresult` and `source` of an exception.** `get_exception_info` answers `null` for both.
+  The debugger reads them out of the target and then leaves them out of the protocol response, so the
+  cost is paid and the values are dropped. The type, message and stack trace all arrive.
 - **Debug a self-contained single-file publish.** The runtime is packed inside the executable, so the
   debugger shim cannot find it to load the matching components. The attempt fails immediately with
   `CORDBG_E_DEBUG_COMPONENT_MISSING` (`0x80131C3C`), reported as
@@ -52,8 +60,8 @@ Some of these need changes in the underlying debugger rather than here.
 
 ## Install
 
-One package carries the native debugger shim for every platform, so the same configuration works
-everywhere. There is nothing to clone or build.
+One package carries the debugger and its native shims for every platform, so the same configuration
+works everywhere. There is nothing to clone or build.
 
 **Claude Code**, for the current project:
 
@@ -175,7 +183,7 @@ Claude: [get_program_output()]
 | `set_function_breakpoint` | Set a breakpoint on a method by name, when the file and line are not known |
 | `remove_breakpoint` | Remove a breakpoint of either kind |
 | `list_breakpoints` | List this session's breakpoints and whether each is verified |
-| `set_exception_break_mode` | Control whether the debugger breaks when the program throws |
+| `set_exception_break_mode` | Choose which exceptions stop the program: all, unhandled, or named types |
 
 ### Execution and inspection
 
@@ -226,6 +234,9 @@ macOS will not let a debugger take another process's task port unless the target
 `com.apple.security.get-task-allow`. A program run through the `dotnet` muxer is fine, because the
 muxer ships with that entitlement; an apphost produced by `dotnet publish` is ad-hoc signed with no
 entitlements at all.
+
+The debugger's own side of this needs nothing from you: the debug adapter is started through the
+`dotnet` muxer as well, so it inherits the entitlements that let it debug at all.
 
 **On a desktop session this does not affect you.** Debugging a self-contained publish carrying no
 entitlements is verified to work there.
@@ -296,7 +307,9 @@ processes open, guessing which one a `continue_execution` was meant for would be
 than taking another slot.
 
 The default of one is deliberate. Every attach carries a risk of a native crash inside the debugging
-shim, so more sessions means more exposure.
+shim, so more sessions means more exposure. What such a crash costs is bounded: each session drives its
+own debug adapter in a process of its own, so the one that crashes takes its session with it and leaves
+the server and any other session running.
 
 ### How failures are reported
 
@@ -375,10 +388,19 @@ dotnet tool exec DotnetDebugger.Mcp --yes
 ## Development
 
 ```bash
-git clone https://github.com/nevse/dotnet-debugger-mcp.git
+git clone --recurse-submodules https://github.com/nevse/dotnet-debugger-mcp.git
 cd dotnet-debugger-mcp
 dotnet build
 dotnet test
+```
+
+The debugger is a submodule at `external/clrdbg`, and the build compiles it and puts the adapter next
+to the server, so there is no separate step. A clone made without submodules fails the build with a
+message saying so; `git submodule update --init --recursive` is the fix. To build against a different
+clrdbg checkout - a fork carrying a fix, say - point `ClrdbgSourcePath` at it:
+
+```bash
+ClrdbgSourcePath=~/work/clrdbg dotnet build
 ```
 
 The integration tests drive a real debuggee with real breakpoints, so they are slower than the rest
@@ -396,7 +418,8 @@ trusted-publishing policy that the workflow depends on but does not show.
 
 ## Related projects
 
-- [SharpDbg](https://github.com/MattParkerDev/sharpdbg) — the underlying .NET debugger
+- [clrdbg](https://github.com/JaneySprings/clrdbg) — the .NET debugger this server drives
+- [SharpDbg](https://github.com/MattParkerDev/sharpdbg) — the debugger it ran on before the move
 - [ClrDebug](https://github.com/lordmilko/ClrDebug) — ICorDebug API wrapper
 - [Model Context Protocol](https://github.com/modelcontextprotocol) — the specification and SDKs
 

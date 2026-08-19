@@ -1,6 +1,6 @@
-# Contributing to SharpDbg MCP Server
+# Contributing to DotnetDebugger.Mcp
 
-Thank you for your interest in contributing to SharpDbg MCP Server! This document provides guidelines and information for contributors.
+Thank you for your interest in contributing to DotnetDebugger.Mcp! This document provides guidelines and information for contributors.
 
 ## Table of Contents
 
@@ -26,10 +26,14 @@ This project adheres to a code of professionalism and respect. All contributors 
 ## Getting Started
 
 1. **Fork the repository** on GitHub
-2. **Clone your fork** locally:
+2. **Clone your fork** locally, together with its submodules:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/dotnet-debugger-mcp.git
+   git clone --recurse-submodules https://github.com/YOUR_USERNAME/dotnet-debugger-mcp.git
    cd dotnet-debugger-mcp
+   ```
+   In a clone that was made without that flag, fetch the submodules afterwards:
+   ```bash
+   git submodule update --init --recursive
    ```
 3. **Add upstream remote**:
    ```bash
@@ -46,6 +50,20 @@ This project adheres to a code of professionalism and respect. All contributors 
 
 ### Building the Project
 
+The debugger this server drives is [clrdbg](https://github.com/JaneySprings/clrdbg), carried as a git
+submodule at `external/clrdbg` and built from source. The `BuildClrdbgAdapter` target in
+`Directory.Build.targets` builds its debug adapter framework-dependent and copies the result into a
+`clrdbg/` folder beside the build output. This runs as part of `dotnet build`, so there is no separate
+step. A build in a clone without the submodule fails with an error from that target that tells you to
+initialize it.
+
+At run time the server starts the adapter as a child process, `dotnet <output directory>/clrdbg/clrdbg.dll`,
+and speaks the Debug Adapter Protocol over its standard input and output. That code lives in
+`src/SharpDbg.MCP/Debugging/ChildProcessDebugAdapter.cs`. A process of its own is what makes a native
+crash inside `libmscordbi` take down the adapter rather than the server, and on macOS the `dotnet`
+muxer carries the entitlement a debugger needs. Set `SHARPDBG_ADAPTER_PATH` to the adapter assembly to
+use one built elsewhere.
+
 ```bash
 # Build the main project
 dotnet build src/SharpDbg.MCP/SharpDbg.MCP.csproj
@@ -55,6 +73,23 @@ dotnet test tests/SharpDbg.MCP.Tests/SharpDbg.MCP.Tests.csproj
 
 # Or use the helper script
 ./scripts/build-and-test.sh
+```
+
+### Building Against a Local clrdbg Checkout
+
+When a fix belongs in the debugger rather than in this server, point the build at a clrdbg checkout of
+your own with the `ClrdbgSourcePath` property. It defaults to the `external/clrdbg` submodule, and an
+environment variable of the same name overrides it for every command in a shell:
+
+```bash
+export ClrdbgSourcePath=/path/to/clrdbg
+dotnet build
+```
+
+For a single command:
+
+```bash
+dotnet build -p:ClrdbgSourcePath=/path/to/clrdbg
 ```
 
 ### Running the Server
@@ -86,6 +121,8 @@ SharpDbg.MCP/
 │       └── Data/                # Embedded resources
 ├── tests/
 │   └── SharpDbg.MCP.Tests/     # Unit tests
+├── external/
+│   └── clrdbg/                  # Debugger submodule, built from source
 ├── examples/                    # Extension examples
 ├── scripts/                     # Development scripts
 └── .github/workflows/           # CI/CD automation
@@ -296,7 +333,7 @@ When reporting a bug, include:
 5. **Environment**:
    - OS (Windows/macOS/Linux + version)
    - .NET SDK version (`dotnet --version`)
-   - SharpDbg MCP Server version
+   - DotnetDebugger.Mcp package version
 6. **Logs**: Relevant error messages or stack traces
 7. **Configuration**: Environment variables used
 
@@ -367,4 +404,4 @@ dotnet list package --outdated
 - Ask in GitHub Discussions
 - Reach out to maintainers
 
-Thank you for contributing to SharpDbg MCP Server!
+Thank you for contributing to DotnetDebugger.Mcp!

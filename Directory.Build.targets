@@ -1,4 +1,42 @@
 <Project>
-  <!-- Custom build targets can be added here -->
-  <!-- See https://aka.ms/dotnet/msbuild/customize for more details on customizing your build -->
+
+  <!--
+    Builds the debug adapter and puts it beside whatever needs it. The adapter runs as a child process
+    (see ChildProcessDebugAdapter), so it is a binary this build has to produce rather than a reference
+    it can link.
+
+    Built framework-dependent on purpose. Its own csproj asks for SelfContained=true, which produces a
+    per-RID copy of the whole runtime - 101MB for one platform, measured - while framework-dependent is
+    20MB and RID-agnostic, carrying runtimes/*/native/libdbgshim.* for every platform at once. That is
+    the same shape this server already ships as, and its users need the .NET SDK regardless.
+
+    The inner build is left to decide for itself whether anything changed; it no-ops in about a second
+    when nothing has. Set NeedsClrdbgAdapter in a project to opt into this.
+  -->
+  <PropertyGroup>
+    <ClrdbgAdapterProject>$(ClrdbgSourcePath)/DotNet.Debugging.Adapter/DotNet.Debugging.Adapter.csproj</ClrdbgAdapterProject>
+    <ClrdbgAdapterOutput>$(MSBuildProjectDirectory)/obj/clrdbg-adapter/$(Configuration)</ClrdbgAdapterOutput>
+  </PropertyGroup>
+
+  <Target Name="BuildClrdbgAdapter" BeforeTargets="Build" Condition="'$(NeedsClrdbgAdapter)' == 'true'">
+    <Error Condition="!Exists('$(ClrdbgAdapterProject)')"
+           Text="The debugger is missing at $(ClrdbgSourcePath). It is a git submodule: run 'git submodule update --init', or point ClrdbgSourcePath at a checkout of your own." />
+
+    <!-- AssetsPath is where their build puts its output, and is redirected here so a Debug and a
+         Release build of this repository do not overwrite each other in the submodule -->
+    <Exec Command="dotnet build &quot;$(ClrdbgAdapterProject)&quot; -c $(Configuration) -p:SelfContained=false -p:AssetsPath=&quot;$(ClrdbgAdapterOutput)&quot;"
+          StandardOutputImportance="low" />
+
+    <ItemGroup>
+      <ClrdbgAdapterFiles Include="$(ClrdbgAdapterOutput)/**/*" />
+    </ItemGroup>
+
+    <Error Condition="!Exists('$(ClrdbgAdapterOutput)/clrdbg.dll')"
+           Text="The debug adapter build produced no clrdbg.dll in $(ClrdbgAdapterOutput)." />
+
+    <Copy SourceFiles="@(ClrdbgAdapterFiles)"
+          DestinationFiles="@(ClrdbgAdapterFiles->'$(OutDir)clrdbg/%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>

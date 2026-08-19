@@ -3,7 +3,9 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-  </PropertyGroup>
+      <!-- The debug adapter runs as a child process and has to sit beside this output -->
+    <NeedsClrdbgAdapter>true</NeedsClrdbgAdapter>
+</PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="MSTest" />

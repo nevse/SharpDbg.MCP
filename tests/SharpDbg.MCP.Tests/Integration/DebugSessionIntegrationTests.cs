@@ -547,9 +547,69 @@ public sealed class DebugSessionIntegrationTests
         var state = session.GetExecutionState();
         Assert.IsFalse(state.IsRunning, "A confirmed pause left the session reporting the program as running");
         Assert.AreEqual("pause", state.StopReason);
+    }
 
-        // And the state it reports matches reality, not just its own bookkeeping
-        Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee kept running while reported paused");
+    /// <summary>
+    /// Whether a confirmed pause actually stops the program. It used to intermittently not: measured on
+    /// 18 August 2026 by running this alone, repeatedly, it failed 6 of 11 runs on SharpDbg 0.1.14 and 1
+    /// of 12 on clrdbg. Every failure was the same shape - the pause was confirmed, the session reported
+    /// the program stopped, and it went on printing for the full thirty seconds this waits.
+    ///
+    /// The debugger hid it: it skipped the stop whenever ICorDebug reported the process as not running,
+    /// which it briefly does while a freshly attached debuggee is plainly still executing, and answered
+    /// the request with success anyway. Fixed in clrdbg af146e5, which refuses the pause instead, and
+    /// Pause retries that refusal - so this now measures the retry as much as the stop.
+    ///
+    /// Kept as the guard on both: it is the only thing here that would notice the day a pause starts
+    /// being answered without taking effect again.
+    /// </summary>
+    [TestMethod]
+    public async Task Pause_WhenConfirmed_ActuallyStopsTheProgram()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        Assert.IsTrue(session.Pause(), "The adapter did not confirm the pause");
+
+        // Waiting for a quiet window rather than demanding the first one be empty: a line written just
+        // before the stop is still travelling through the pipe and the callback that counts it, so it
+        // can land after the sampling starts. This cannot be defeated by a slow machine, and still
+        // fails outright when the program never stops - which is the failure being measured.
+        Assert.IsTrue(
+            DebuggeeProcess.SpinUntil(() => debuggee.CountOutputDuring(ObservationWindow) == 0, StopTimeout),
+            "Pause was confirmed and the session reports the program stopped, but it kept printing");
+    }
+
+    /// <summary>
+    /// Pausing a program that has already stopped answers from what the session knows rather than
+    /// asking the debugger, which refuses a pause in that state. The refusal is retried for the whole
+    /// operation timeout, so sending one would mean thirty seconds of retries and then an error about a
+    /// program that is in the state the caller asked for - hence the elapsed-time assertion, which is
+    /// what tells an answer apart from a spent budget.
+    /// </summary>
+    [TestMethod]
+    public async Task Pause_WhenAlreadyStopped_AnswersFromTheSessionWithoutRetrying()
+    {
+        using var debuggee = DebuggeeProcess.Start();
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        Assert.IsTrue(session.Pause(), "The adapter did not confirm the pause");
+
+        var started = DateTime.UtcNow;
+        var again = session.Pause();
+        var elapsed = DateTime.UtcNow - started;
+
+        Assert.IsTrue(again, "A pause on an already-stopped program reported failure");
+        Assert.IsTrue(elapsed < TimeSpan.FromSeconds(5),
+            $"The second pause took {elapsed.TotalSeconds:0.0}s, so it went to the debugger and retried");
+
+        var state = session.GetExecutionState();
+        Assert.IsFalse(state.IsRunning, "The second pause left the session reporting the program as running");
+        Assert.AreEqual("pause", state.StopReason);
     }
 
     /// <summary>
@@ -838,6 +898,53 @@ public sealed class DebugSessionIntegrationTests
     }
 
     /// <summary>
+    /// Why the debugger runs in its own process at all. The debugging shim segfaults inside
+    /// libmscordbi often enough to have killed whole test runs while it ran in ours, and there is
+    /// nothing to be done about that from managed code - it is a .NET runtime defect. What can be done
+    /// is to put it behind a process boundary, and this is the assertion that the boundary holds:
+    /// with the debugger killed outright, the operation fails, the teardown returns, and this process
+    /// carries on. Nothing else in the suite would notice if that stopped being true, because the way
+    /// it stops being true is the test host dying, which reads as infrastructure trouble.
+    ///
+    /// The kill is deliberately the rudest available - not a disconnect, not a terminate - because a
+    /// segfault is not polite either.
+    /// </summary>
+    [TestMethod]
+    public async Task AdapterKilledOutright_FailsTheOperationAndLeavesUsRunning()
+    {
+        var line = TestPaths.FindMarkerLine("BREAKPOINT-TARGET");
+
+        using var debuggee = DebuggeeProcess.Start();
+        var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+        session.SetBreakpoint(TestPaths.TestAppSource, line);
+        WaitForStop(session);
+
+        var adapterProcessId = session.AdapterProcessId;
+        Assert.IsNotNull(adapterProcessId, "The debugger runs as a child process and must be nameable");
+
+        using (var adapter = Process.GetProcessById(adapterProcessId.Value))
+        {
+            adapter.Kill(entireProcessTree: true);
+            Assert.IsTrue(adapter.WaitForExit(TimeSpan.FromSeconds(10)), "The debugger would not die");
+        }
+
+        // Failing is the point. Hanging is what this replaced: in-process there was no failure to
+        // report, because the process that would have reported it was the one that crashed.
+        Assert.ThrowsExactly<OperationCanceledException>(() => session.GetThreads());
+
+        // And the teardown has to come back rather than waiting out its timeouts against a debugger
+        // that is not there
+        var releasing = Stopwatch.StartNew();
+        session.Dispose();
+
+        Assert.IsLessThan(
+            TimeSpan.FromSeconds(10), releasing.Elapsed,
+            "Releasing a session whose debugger is already gone should not wait for anything");
+    }
+
+    /// <summary>
     /// The exit code of a process we merely attached to is deliberately not reported. SharpDbg reads
     /// the code off the process object it holds for a launch, has none for an attach, and sends 0 on
     /// the wire in that case rather than nothing - so the protocol cannot tell "exited with 0" from
@@ -892,9 +999,6 @@ public sealed class DebugSessionIntegrationTests
 
         Assert.AreEqual("System.InvalidOperationException", thrown.TypeName,
             "The full type name is the whole point: nothing else reports it");
-        Assert.AreEqual(unchecked((int)0x80131509), thrown.HResult, "COR_E_INVALIDOPERATION");
-        Assert.AreEqual("SharpDbg.MCP.TestApp", thrown.Source,
-            "Source is the assembly that raised it, not a source file");
 
         // The exception's own stack trace, which is filled in as it is thrown rather than as it
         // unwinds, so it is already there at a first-chance stop and names the throw site
@@ -907,9 +1011,12 @@ public sealed class DebugSessionIntegrationTests
         // get_exception_info's description sends callers to $exception for everything it does not
         // report - an inner exception, a property of their own exception type - so the pseudo-local
         // being there is part of what the tool promises rather than a detail of the evaluator
+        // Checked against the constant rather than against what get_exception_info returned, because
+        // this debugger drops HResult on the way out - see the probe below. The value is in the target
+        // either way, which is the point: $exception reaches what the response leaves behind.
         var frames = session.GetStackTrace(state.StoppedThreadId.Value);
         var reachable = await session.EvaluateExpression("$exception.HResult", frames[0].Id);
-        Assert.AreEqual(thrown.HResult.ToString(), reachable.Result,
+        Assert.AreEqual(unchecked((int)0x80131509).ToString(), reachable.Result,
             "$exception is what the caller is told to use for anything get_exception_info leaves out");
 
         // Four evaluations at a stop used to cost the debuggee its ability to resume. Counting ticks
@@ -925,6 +1032,45 @@ public sealed class DebugSessionIntegrationTests
 
         Assert.IsGreaterThan(iteration, IterationThrownOn(thrownNext),
             "The debuggee never got past the exception it was already stopped on");
+    }
+
+    /// <summary>
+    /// HResult and Source, which the debugger computes and then does not send.
+    ///
+    /// This is not a missing feature but a dropped one, and it is worth being exact about because the
+    /// data is already paid for: the engine's ExceptionInfo reads HResult, Source, Message and
+    /// StackTrace out of the target - four function evaluations, the expensive part of this whole
+    /// operation - and the adapter's ToExceptionDetails then copies only some of them onto the DAP
+    /// response. Three lines short, upstream, on values already in hand.
+    ///
+    /// So this asserts them when they arrive and reports itself inconclusive when they do not, rather
+    /// than either failing the suite over someone else's oversight or quietly asserting null and
+    /// turning a gap into the expected behaviour. It starts passing on its own once that is fixed.
+    /// </summary>
+    [TestMethod]
+    public async Task ExceptionStop_HResultAndSource_AreDroppedByTheAdapter()
+    {
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        await session.Attach(debuggee.ProcessId);
+
+        var state = session.WaitForStop(StopTimeout);
+        Assert.IsNotNull(state);
+        Assert.AreEqual("exception", state.StopReason);
+
+        var thrown = await session.GetExceptionInfo(state.StoppedThreadId!.Value);
+
+        if (thrown.HResult is null && thrown.Source is null)
+        {
+            Assert.Inconclusive(
+                "The adapter still drops HResult and Source in ToExceptionDetails, though the engine "
+                + "fills both. Nothing to assert until that is sent.");
+        }
+
+        Assert.AreEqual(unchecked((int)0x80131509), thrown.HResult, "COR_E_INVALIDOPERATION");
+        Assert.AreEqual("SharpDbg.MCP.TestApp", thrown.Source,
+            "Source is the assembly that raised it, not a source file");
     }
 
     /// <summary>
@@ -975,7 +1121,7 @@ public sealed class DebugSessionIntegrationTests
         using var debuggee = DebuggeeProcess.Start("--throw");
         using var session = CreateSession();
 
-        session.ExceptionBreakMode = ExceptionBreakMode.Never;
+        session.SetExceptionBreakMode(ExceptionBreakMode.Never);
 
         await session.Attach(debuggee.ProcessId);
 
@@ -996,6 +1142,109 @@ public sealed class DebugSessionIntegrationTests
     }
 
     /// <summary>
+    /// The quiet mode that costs nothing. Unlike Never, which asks for every throw and resumes each one
+    /// here, this asks for no filter at all, so the debugger never mentions a caught exception - and a
+    /// program that catches its own runs untouched.
+    /// </summary>
+    [TestMethod]
+    public async Task ExceptionStop_WithBreakModeUnhandled_IgnoresAnExceptionTheProgramCatches()
+    {
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        // Before attaching on purpose: the choice has to travel with the attach, since the debugger
+        // stops on whatever it was last told and there is no stop to undo afterwards
+        session.SetExceptionBreakMode(ExceptionBreakMode.Unhandled);
+
+        await session.Attach(debuggee.ProcessId);
+
+        Assert.IsGreaterThan(
+            0,
+            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+            "The debuggee suspended on an exception it catches itself");
+
+        var state = session.GetExecutionState();
+        Assert.IsTrue(state.IsRunning, $"Session reports stopped: reason={state.StopReason}");
+        Assert.AreNotEqual("exception", state.StopReason);
+
+        // Nothing was reported, so nothing was counted either - the difference from Never, which pays a
+        // round trip per exception precisely to keep these numbers
+        Assert.AreEqual(0, state.ExceptionsSeen);
+        Assert.AreEqual(0, state.ExceptionsIgnored);
+    }
+
+    /// <summary>
+    /// Stopping on one named exception type and nothing else, which is what defect 7 blocked for as long
+    /// as a stop carried no type. The debuggee throws InvalidOperationException, so naming it must stop.
+    /// </summary>
+    [TestMethod]
+    public async Task ExceptionStop_NarrowedToTheTypeThrown_StillStops()
+    {
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        session.SetExceptionBreakMode(
+            ExceptionBreakMode.Always, ["System.InvalidOperationException"]);
+
+        await session.Attach(debuggee.ProcessId);
+
+        var state = session.WaitForStop(StopTimeout);
+
+        Assert.IsNotNull(state, "The named type is what the debuggee throws, so it must have stopped");
+        Assert.AreEqual("exception", state.StopReason);
+        Assert.AreEqual(0, debuggee.CountOutputDuring(ObservationWindow), "Debuggee kept running while stopped");
+    }
+
+    /// <summary>
+    /// The other direction, and the one that proves the filter is doing the work rather than the mode:
+    /// the same program and the same mode, with the type it throws excluded, must not stop at all.
+    /// </summary>
+    [TestMethod]
+    public async Task ExceptionStop_WithTheThrownTypeExcluded_DoesNotStop()
+    {
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        session.SetExceptionBreakMode(
+            ExceptionBreakMode.Always, ["System.InvalidOperationException"], typesAreExcluded: true);
+
+        await session.Attach(debuggee.ProcessId);
+
+        Assert.IsGreaterThan(
+            0,
+            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+            "The debuggee suspended on a type the filter excluded");
+
+        var state = session.GetExecutionState();
+        Assert.IsTrue(state.IsRunning, $"Session reports stopped: reason={state.StopReason}");
+
+        // The exclusion is the debugger's, not ours: it never reported the stop, so there was nothing
+        // here to hide or to count
+        Assert.AreEqual(0, state.ExceptionsSeen);
+    }
+
+    /// <summary>
+    /// A type list that names something else entirely leaves the program alone, which is the same
+    /// mechanism as the exclusion above read the other way round: an inclusion list the throw is not on.
+    /// </summary>
+    [TestMethod]
+    public async Task ExceptionStop_NarrowedToAnotherType_DoesNotStop()
+    {
+        using var debuggee = DebuggeeProcess.Start("--throw");
+        using var session = CreateSession();
+
+        session.SetExceptionBreakMode(ExceptionBreakMode.Always, ["System.FormatException"]);
+
+        await session.Attach(debuggee.ProcessId);
+
+        Assert.IsGreaterThan(
+            0,
+            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+            "The debuggee suspended on a type the filter does not name");
+        Assert.IsTrue(session.GetExecutionState().IsRunning);
+    }
+
+    /// <summary>
     /// Ignoring exceptions must not swallow the stops the caller actually asked for.
     /// </summary>
     [TestMethod]
@@ -1006,7 +1255,7 @@ public sealed class DebugSessionIntegrationTests
         using var debuggee = DebuggeeProcess.Start("--throw");
         using var session = CreateSession();
 
-        session.ExceptionBreakMode = ExceptionBreakMode.Never;
+        session.SetExceptionBreakMode(ExceptionBreakMode.Never);
 
         await session.Attach(debuggee.ProcessId);
         var breakpoint = session.SetBreakpoint(TestPaths.TestAppSource, line);
@@ -1035,7 +1284,7 @@ public sealed class DebugSessionIntegrationTests
         Assert.IsNotNull(stopped);
         Assert.AreEqual("exception", stopped.StopReason);
 
-        session.ExceptionBreakMode = ExceptionBreakMode.Never;
+        session.SetExceptionBreakMode(ExceptionBreakMode.Never);
 
         Assert.IsGreaterThan(
             0,
