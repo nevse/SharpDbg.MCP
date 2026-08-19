@@ -39,6 +39,33 @@ now does; stepping into code without symbols; a hit on a just-replaced breakpoin
 running debuggee. Nothing here re-tests the last three against clrdbg, so if it shares any of them,
 they will arrive as new findings rather than as confirmations.
 
+### A resume that sometimes does not resume, on Windows only
+Seen twice, in two Windows integration runs of the clrdbg migration, one failure per run and a
+different test each time:
+
+- `ExceptionStop_WithBreakModeNever_LetsTheDebuggeeRunOn` - the debuggee printed nothing for two
+  seconds after this session resumed an exception stop it had decided to ignore. Exactly one "Ignored
+  exception" line was logged, so the resume was sent once and no further exception ever arrived.
+- `TwoSessions_DebugTwoProcessesIndependently` - the debuggee printed nothing for two seconds after
+  `close_session` released it.
+
+Both are the same shape: a process that should have been let go stayed suspended. Four later runs of
+the same job were clean, macOS and Linux have never shown it, and three runs on `main` against
+SharpDbg were green before the move, so it arrived with clrdbg and it is intermittent rather than
+certain.
+
+**Hypothesis, not a finding.** ICorDebug's `Stop`/`Continue` pair is a nesting counter, and clrdbg's
+`ContinueWithVariableClearAllowSuperfluousContinue` issues one `TryContinue` and swallows
+`CORDBG_E_SUPERFLOUS_CONTINUE`. A stop count above one would then leave the process suspended with no
+error returned to anyone - which matches every symptom above, and is worth nothing until measured.
+
+**What it needs is one failure that talks.** Both tests now wait a further fifteen seconds and report
+whether the debuggee ever printed again, and the exception one also reports what the session believed:
+a session that knows it is stopped never sent the resume, while one that believes the program runs was
+told the resume landed when it did not. That message is what should go upstream; two silent failures
+are not enough to report.
+**Effort: S** to report once it reproduces, unknown to fix.
+
 ### Most adapter requests still have no bound
 `pause_execution` used to be the named case and is now bounded: `DapDebugger.TryPause` and
 `TryGetThreads` take a timeout, and the stop is recorded from the adapter's own confirmation rather
