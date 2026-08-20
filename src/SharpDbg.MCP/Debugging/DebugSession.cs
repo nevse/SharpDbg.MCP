@@ -29,6 +29,11 @@ public class DebugSession : IDisposable
 
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(25);
 
+    /// <summary>
+    /// How long Start waits for the debugger's process event before answering without a pid
+    /// </summary>
+    private static readonly TimeSpan ProcessIdWindow = TimeSpan.FromSeconds(1);
+
     // macOS and Windows file systems are case-insensitive by default; Linux is not
     private static readonly StringComparer PathComparer =
         OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
@@ -447,6 +452,15 @@ public class DebugSession : IDisposable
         try
         {
             debugger.Start(_operationTimeout);
+
+            // The debugger names the process it started in a DAP event, and that event races the
+            // response to the request that started it - both are in flight at once and arrive on
+            // different threads, so reading the pid straight after would report null about half the
+            // time. Waiting a moment is what lets this call answer with the process it created
+            // rather than the next call. A debugger that sends no such event pays this window once
+            // per start and reports no pid, which is the honest answer for it.
+            WaitFor(() => ProcessId is not null, ProcessIdWindow);
+
             McpLogger.LogDebugSessionEvent(_sessionId, "Started", _launchedProgram ?? string.Empty);
         }
         catch (Exception ex)
