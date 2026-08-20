@@ -1618,10 +1618,10 @@ public class DebugSession : IDisposable
             ClearStopState();
         }
 
-        // Whether the disconnect that carries the terminate returned at all. Nothing here can confirm
-        // the kill: SharpDbg swallows a terminate failure and reports success, and it never tells us
-        // the pid, so there is no process to look for afterwards. A disconnect that threw or timed
-        // out is the only warning available that the program may have survived.
+        // Whether the disconnect that carries the terminate returned at all. It is not a confirmed
+        // kill: the debugger swallows a terminate failure and reports success either way. The pid is
+        // known now, so a caller could look the process up, but a disconnect that threw or timed out
+        // is all this has to go on.
         var releasedCleanly = true;
 
         // Release outside the lock to avoid potential deadlocks. Without Disconnect the debuggee is
@@ -1634,11 +1634,15 @@ public class DebugSession : IDisposable
         // later operation on this session.
         try
         {
-            // A program we started is ours to clean up. Terminating a running debuggee needs it
-            // synchronized, and SharpDbg does that itself since 0.1.13 - Terminate stops the process
-            // before terminating it. Up to 0.1.12 it did not, and the failure was swallowed, so this
-            // paused first to make the terminate land. Measured on the way in: with the pause gone,
-            // 0.1.12 leaks the debuggee on 5 of 5 runs and 0.1.13 kills it on 5 of 5.
+            // A program we started is ours to clean up, and only that one: an attached process gets
+            // terminateDebuggee false, which takes the branch that stops it properly rather than the
+            // terminate. That matters, because ICorDebugProcess::Terminate needs the process
+            // synchronized and clrdbg does not stop it first - an attached one survives a terminate
+            // that answered success, which is UPSTREAM.md C4. A launched program dies anyway, from
+            // the Process.Kill in the debugger's own Dispose; UpstreamProbeTests pins that.
+            //
+            // SharpDbg fixed the same defect in 0.1.13 by stopping first, which is why the pause this
+            // used to do before the terminate is gone.
             debuggerToRelease.Disconnect(terminateDebuggee: weStartedIt, _operationTimeout);
         }
         catch (Exception ex)

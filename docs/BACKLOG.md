@@ -39,35 +39,46 @@ fails the session that caused it and leaves the server standing, which
 Everything else that stood in this section was a SharpDbg defect and left with the dependency —
 exception stops that could not be filtered by type or handled-ness, which `set_exception_break_mode`
 now does; stepping into code without symbols; a hit on a just-replaced breakpoint; terminating a
-running debuggee. Nothing here re-tests the last three against clrdbg, so if it shares any of them,
-they will arrive as new findings rather than as confirmations.
+running debuggee. The last three were re-tested against clrdbg on 20 August 2026 and none of them
+reproduces through this server; `UpstreamProbeTests` is what settled that and stays as the guard.
 
-### A resume that sometimes does not resume, on Windows only
-Seen twice, in two Windows integration runs of the clrdbg migration, one failure per run and a
-different test each time:
+The terminate one is the only one with anything left in it. clrdbg's `Terminate` has the shape the
+defect describes — no stop before the terminate, and a failure that is only logged — and a running
+**attached** process does survive it, measured in clrdbg's own fixture. It never reaches us: clrdbg's
+`Dispose` kills the OS process it started itself, and this server only ever asks to terminate a
+program it launched. The two terminate probes pin the first of those — a launched program does not
+outlive its session, running or stopped; the attached side is pinned by
+`TwoSessions_DebugTwoProcessesIndependently`. Filed upstream as
+[clrdbg#4](https://github.com/JaneySprings/clrdbg/pull/4).
 
-- `ExceptionStop_WithBreakModeNever_LetsTheDebuggeeRunOn` - the debuggee printed nothing for two
-  seconds after this session resumed an exception stop it had decided to ignore. Exactly one "Ignored
-  exception" line was logged, so the resume was sent once and no further exception ever arrived.
-- `TwoSessions_DebugTwoProcessesIndependently` - the debuggee printed nothing for two seconds after
-  `close_session` released it.
+### A resume that sometimes does not resume, on Windows only — closed, it did resume
 
-Both are the same shape: a process that should have been let go stayed suspended. Four later runs of
-the same job were clean, macOS and Linux have never shown it, and three runs on `main` against
-SharpDbg were green before the move, so it arrived with clrdbg and it is intermittent rather than
-certain.
+**Closed on 20 August 2026.** The failure reproduced once more, on the Windows integration leg of
+[#10](https://github.com/nevse/dotnet-debugger-mcp/pull/10), and the diagnostics armed for it answered
+the question in one line:
 
-**Hypothesis, not a finding.** ICorDebug's `Stop`/`Continue` pair is a nesting counter, and clrdbg's
-`ContinueWithVariableClearAllowSuperfluousContinue` issues one `TryContinue` and swallows
-`CORDBG_E_SUPERFLOUS_CONTINUE`. A stop count above one would then leave the process suspended with no
-error returned to anyone - which matches every symptom above, and is worth nothing until measured.
+```
+Debuggee stayed suspended on an exception that should have been resumed.
+The session says running=True, reason=none, seen=1, ignored=1;
+the debuggee printed again after a further 0.9s
+```
 
-**What it needs is one failure that talks.** Both tests now wait a further fifteen seconds and report
-whether the debuggee ever printed again, and the exception one also reports what the session believed:
-a session that knows it is stopped never sent the resume, while one that believes the program runs was
-told the resume landed when it did not. That message is what should go upstream; two silent failures
-are not enough to report.
-**Effort: S** to report once it reproduces, unknown to fix.
+The program was not stranded. It resumed, and printed again about three seconds after the exception
+stop rather than within the two the test allowed. The session knew it had resumed throughout —
+`running=True`, one exception seen and one ignored — so nothing was lost anywhere.
+
+The nesting-counter hypothesis recorded here was wrong, and so was the name of the entry. What the two
+failures actually shared was the **test** shape, not a debugger defect: both asserted that a program is
+running by counting lines printed inside a fixed two-second window, which measures the rate as well as
+the fact. In `never` mode every throw costs a round trip to resume it, and the debuggee throws every
+150ms, so a loaded Windows runner can legitimately hold it below one line per two seconds while it
+settles.
+
+Nine assertions across the suite had that shape. They now wait up to `ResumeTimeout` for the debuggee
+to print at all, through `DebuggeeProcess.WaitForOutput`, which is both the right claim and faster:
+the happy path returns in about 150ms instead of sleeping two seconds, and the suite lost 24 seconds.
+Windows-only was never a debugger difference — it was the one platform slow enough to cross the
+threshold. Assertions that require **silence** keep their fixed window, which is what that measures.
 
 ### Most adapter requests still have no bound
 `pause_execution` used to be the named case and is now bounded: `DapDebugger.TryPause` and

@@ -21,6 +21,14 @@ namespace SharpDbg.MCP.Tests.Integration;
 public sealed class DebugSessionIntegrationTests
 {
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// How long a debuggee that should be running is given to prove it, by printing. Generous on
+    /// purpose: the claim is that it runs at all, and a loaded runner can hold it well below its
+    /// usual rate - measured on Windows CI at over two seconds of silence from a program that then
+    /// ran on perfectly well.
+    /// </summary>
+    private static readonly TimeSpan ResumeTimeout = TimeSpan.FromSeconds(20);
+
     private static readonly TimeSpan ObservationWindow = TimeSpan.FromSeconds(1);
 
     private static DebugSession CreateSession() => new(1, new ServerConfiguration());
@@ -241,9 +249,8 @@ public sealed class DebugSessionIntegrationTests
 
         // The line is hit every iteration, so if the breakpoint were still armed the process
         // would stop again almost immediately instead of producing output.
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(ObservationWindow),
+        Assert.IsTrue(
+            debuggee.WaitForOutput(ResumeTimeout),
             "Process stopped again after its only breakpoint was removed");
         Assert.IsTrue(session.GetExecutionState().IsRunning);
     }
@@ -450,9 +457,8 @@ public sealed class DebugSessionIntegrationTests
         // evaluation - otherwise it stops again on the next iteration and prints nothing either way
         Assert.IsTrue(session.RemoveBreakpoint(session.ListBreakpoints()[0].Id));
         Assert.IsTrue(session.Continue());
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(ObservationWindow),
+        Assert.IsTrue(
+            debuggee.WaitForOutput(ResumeTimeout),
             "The debuggee did not resume on the first continue");
     }
 
@@ -648,9 +654,8 @@ public sealed class DebugSessionIntegrationTests
         var released = session.Detach();
 
         Assert.IsFalse(session.IsAttached);
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(ObservationWindow),
+        Assert.IsTrue(
+            debuggee.WaitForOutput(ResumeTimeout),
             "Debuggee stayed suspended after detach");
 
         // The attached half of what detach_from_process reports. Like its launched counterpart in
@@ -705,19 +710,15 @@ public sealed class DebugSessionIntegrationTests
         sessionA.RemoveBreakpoint(breakpointA.Id);
         Assert.IsTrue(sessionA.Continue());
 
-        Assert.IsGreaterThan(0, debuggeeA.CountOutputDuring(TimeSpan.FromSeconds(2)), "A did not resume");
+        Assert.IsTrue(debuggeeA.WaitForOutput(ResumeTimeout), "A did not resume");
         Assert.AreEqual(0, debuggeeB.CountOutputDuring(ObservationWindow), "B resumed with A");
         Assert.IsFalse(sessionB.GetExecutionState().IsRunning);
 
         // Closing a session releases its debuggee and frees the slot
         manager.CloseSession(sessionB.SessionId);
         Assert.HasCount(1, manager.GetAllSessions());
-        if (debuggeeB.CountOutputDuring(TimeSpan.FromSeconds(2)) == 0)
-        {
-            Assert.Fail(
-                "Closing the session left its debuggee suspended; it "
-                + debuggeeB.DescribeResumption(TimeSpan.FromSeconds(15)));
-        }
+        Assert.IsTrue(debuggeeB.WaitForOutput(ResumeTimeout),
+            "Closing the session left its debuggee suspended");
     }
 
     /// <summary>
@@ -840,9 +841,8 @@ public sealed class DebugSessionIntegrationTests
         Assert.IsEmpty(session.ListFunctionBreakpoints());
 
         Assert.IsTrue(session.Continue());
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+        Assert.IsTrue(
+            debuggee.WaitForOutput(ResumeTimeout),
             "Debuggee stopped again, so the function breakpoint was still armed");
     }
 
@@ -1109,20 +1109,22 @@ public sealed class DebugSessionIntegrationTests
 
         await session.Attach(debuggee.ProcessId);
 
-        // Every iteration throws, so an unresumed exception stop would show up as silence here
-        var printed = debuggee.CountOutputDuring(TimeSpan.FromSeconds(2));
+        // Every iteration throws, so a debuggee left suspended never prints again. The claim is that
+        // it runs on, not how fast: in this mode each throw costs a round trip to resume it, and on a
+        // loaded Windows runner that has been measured to hold the program below one line per two
+        // seconds while it settles - which a fixed window read as a lost resume.
+        var ranOn = debuggee.WaitForOutput(ResumeTimeout);
         var state = session.GetExecutionState();
 
         // The state belongs in the message rather than in a later assertion, because silence has two
         // very different causes: a session that knows it is stopped never sent the resume, while one
         // that believes the program runs was told the resume landed when it did not.
-        if (printed == 0)
+        if (!ranOn)
         {
             Assert.Fail(
                 "Debuggee stayed suspended on an exception that should have been resumed. The session "
                 + $"says running={state.IsRunning}, reason={state.StopReason ?? "none"}, "
-                + $"seen={state.ExceptionsSeen}, ignored={state.ExceptionsIgnored}; the debuggee "
-                + debuggee.DescribeResumption(TimeSpan.FromSeconds(15)));
+                + $"seen={state.ExceptionsSeen}, ignored={state.ExceptionsIgnored}");
         }
         Assert.IsTrue(state.IsRunning, $"Session reports stopped: reason={state.StopReason}");
         Assert.IsGreaterThan(0, state.ExceptionsSeen, "The debuggee did throw, so the stops must have been counted");
@@ -1150,9 +1152,8 @@ public sealed class DebugSessionIntegrationTests
 
         await session.Attach(debuggee.ProcessId);
 
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+        Assert.IsTrue(
+            debuggee.WaitForOutput(ResumeTimeout),
             "The debuggee suspended on an exception it catches itself");
 
         var state = session.GetExecutionState();
@@ -1202,9 +1203,8 @@ public sealed class DebugSessionIntegrationTests
 
         await session.Attach(debuggee.ProcessId);
 
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+        Assert.IsTrue(
+            debuggee.WaitForOutput(ResumeTimeout),
             "The debuggee suspended on a type the filter excluded");
 
         var state = session.GetExecutionState();
@@ -1229,9 +1229,8 @@ public sealed class DebugSessionIntegrationTests
 
         await session.Attach(debuggee.ProcessId);
 
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+        Assert.IsTrue(
+            debuggee.WaitForOutput(ResumeTimeout),
             "The debuggee suspended on a type the filter does not name");
         Assert.IsTrue(session.GetExecutionState().IsRunning);
     }
@@ -1278,9 +1277,8 @@ public sealed class DebugSessionIntegrationTests
 
         session.SetExceptionBreakMode(ExceptionBreakMode.Never);
 
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(TimeSpan.FromSeconds(2)),
+        Assert.IsTrue(
+            debuggee.WaitForOutput(ResumeTimeout),
             "The exception stop that was already in progress was never released");
     }
 
@@ -1403,9 +1401,8 @@ public sealed class DebugSessionIntegrationTests
 
         session.Dispose();
 
-        Assert.IsGreaterThan(
-            0,
-            debuggee.CountOutputDuring(ObservationWindow),
+        Assert.IsTrue(
+            debuggee.WaitForOutput(ResumeTimeout),
             "Debuggee stayed suspended after the session was disposed");
     }
 }
