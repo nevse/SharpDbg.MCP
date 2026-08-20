@@ -95,5 +95,5 @@ what each tool reports when unconfirmed, which is why it is not a mechanical cha
 **Effort: M**
 
 Distribution used to be a section here. It is done: the package is on nuget.org with the debug adapter
-inside it, the registry entry is published, and `publish-registry.yml` keeps the two in step on every
+inside it, the registry entry is published, and `ci.yml`'s `registry` job keeps the two in step on every
 release. See [RELEASING.md](RELEASING.md).

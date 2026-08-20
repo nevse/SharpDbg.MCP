@@ -1,7 +1,8 @@
 # Releasing
 
-A release is a git tag and a GitHub Release. The `package` job in `ci.yml` does the rest: it reads
-the version from the tag, stamps it into `.mcp/server.json`, packs, and pushes to nuget.org.
+A release is a git tag and a GitHub Release. `ci.yml` does the rest in two jobs: `package` reads the
+version from the tag, stamps it into `.mcp/server.json`, packs and pushes to nuget.org; `registry`
+then publishes that same manifest to the MCP Registry.
 
 The package carries the debug adapter, built from the `external/clrdbg` submodule during the pack, so
 every job in `ci.yml` checks the repository out with `submodules: true`. A checkout without them fails
@@ -48,19 +49,21 @@ if a publish is ever refused for no other apparent reason.
    git push origin v0.1.0
    ```
 
-3. Create the GitHub Release for that tag. **Both workflows trigger on the release, not the tag**, so
+3. Create the GitHub Release for that tag. **`ci.yml` publishes on the release, not on the tag**, so
    a pushed tag alone publishes nothing.
-4. Watch two things. `ci.yml`'s `Package` job, which runs only after the unit and integration jobs
-   pass and does the NuGet push; and `publish-registry.yml`, which starts at the same time and spends
-   most of its run waiting for nuget.org before it updates the registry.
+4. Watch `ci.yml`. `Package` runs after the unit and integration jobs pass and does the NuGet push;
+   `MCP Registry` runs after it and spends most of its time waiting for nuget.org to finish
+   validating that push.
 
 The push uses `--skip-duplicate`, so re-running a release that already published is harmless.
 
 ## The MCP Registry
 
-Automatic since 0.1.1: `publish-registry.yml` runs on the same release and needs nothing from you.
+Automatic since 0.1.1, and part of `ci.yml` since 0.3.0: the `registry` job needs nothing from you.
 It authenticates with `mcp-publisher login github-oidc` — the same OIDC exchange the NuGet push uses,
-so there is no second secret — and publishes `.mcp/server.json` with the version stamped in.
+so there is no second secret — and publishes the very `server.json` the `package` job stamped and
+packed, handed over as a build artifact rather than stamped a second time. The registry entry and the
+package therefore cannot claim different versions.
 
 The one-time namespace claim is done. `io.github.nevse/dotnet-debugger-mcp` was published by hand on
 15 August 2026 for 0.1.0, which established `io.github.nevse/*`. What the registry holds now:
@@ -69,12 +72,17 @@ The one-time namespace claim is done. `io.github.nevse/dotnet-debugger-mcp` was 
 curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.nevse"
 ```
 
-**Why it is a separate workflow rather than a step in `package`.** The registry proves we own the name
-by reading the `mcp-name` marker out of the package README *on nuget.org*, so there is nothing to
-verify until nuget has finished validating the push — several minutes for 0.1.1, and on a release the
-`package` job is only pushing at about that moment. The workflow polls
-`https://api.nuget.org/v3-flatcontainer/dotnetdebugger.mcp/<version>/readme` for up to 20 minutes, and
-being its own workflow means it can sleep through that without holding up the package.
+**Why it waits, and why it waits after the push rather than beside it.** The registry proves we own
+the name by reading the `mcp-name` marker out of the package README *on nuget.org*, so there is
+nothing to verify until nuget has finished validating the push — several minutes for 0.1.1. The job
+polls `https://api.nuget.org/v3-flatcontainer/dotnetdebugger.mcp/<version>/readme` for up to 20
+minutes against a 25-minute job timeout.
+
+It used to be a workflow of its own, triggered by the same release, so it started polling while
+`ci.yml` was still building and spent part of that budget on a package that had not been pushed yet.
+That is what cancelled the 0.2.0 registry run on its timeout while the README was still on its way.
+`needs: [package]` costs nothing — the polling never made nuget any faster — and the timeout now
+covers nuget's validation alone.
 
 The marker itself is in `docs/nuget-readme.md`, which opens with
 `<!-- mcp-name: io.github.nevse/dotnet-debugger-mcp -->`, matching `name` in
@@ -82,7 +90,9 @@ The marker itself is in `docs/nuget-readme.md`, which opens with
 
 ### Re-publishing a version
 
-For a release cut before this workflow existed, or a publish that failed and needs retrying:
+`publish-registry.yml` is kept for exactly this, and no longer triggers on a release. Use it for a
+version already on nuget.org whose registry entry is missing or stale — a `registry` job that failed,
+or a release cut before any of this existed:
 
 ```bash
 gh workflow run publish-registry.yml -f version=0.1.1
