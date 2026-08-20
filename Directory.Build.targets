@@ -24,8 +24,16 @@
 
     <!-- AssetsPath is where their build puts its output, and is redirected here so a Debug and a
          Release build of this repository do not overwrite each other in the submodule -->
-    <Exec Command="dotnet build &quot;$(ClrdbgAdapterProject)&quot; -c $(Configuration) -p:SelfContained=false -p:AssetsPath=&quot;$(ClrdbgAdapterOutput)&quot;"
-          StandardOutputImportance="low" />
+    <!-- The child gets its own MSBuild nodes and no inherited MSBUILD_EXE_PATH. Both halves are
+         load-bearing and both were measured: under 'dotnet test' the nested build otherwise deadlocks,
+         spawning no child process and never returning, while the same command with this target
+         disabled finishes in seconds. Clearing MSBUILD_EXE_PATH alone still hangs; disabling node
+         reuse alone was not tried, since the variable points the child at the caller's MSBuild and is
+         wrong to inherit regardless. Do not clear MSBuildSDKsPath with it - the child then cannot find
+         Microsoft.NET.Sdk at all. Plain 'dotnet build' never showed the deadlock. -->
+    <Exec Command="dotnet build &quot;$(ClrdbgAdapterProject)&quot; -c $(Configuration) -nodeReuse:false -p:SelfContained=false -p:AssetsPath=&quot;$(ClrdbgAdapterOutput)&quot;"
+          StandardOutputImportance="low"
+          EnvironmentVariables="MSBUILD_EXE_PATH=;MSBUILDDISABLENODEREUSE=1" />
 
     <ItemGroup>
       <ClrdbgAdapterFiles Include="$(ClrdbgAdapterOutput)/**/*" />
