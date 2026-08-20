@@ -5,16 +5,9 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 ## Waiting on upstream
 
-One gap is left in [clrdbg](https://github.com/JaneySprings/clrdbg), the debugger this server drives,
-and it is pinned by a test that reports Inconclusive rather than passing, so it starts failing the day
-it is fixed:
-
-- **`exceptionInfo` drops `HResult` and `Source`.** The engine reads both out of the target — four
-  function evaluations, which is the expensive part of that request — and then leaves them out of the
-  response, so the cost is paid and the values are lost. `get_exception_info` answers null for both.
-  `ExceptionStop_HResultAndSource_AreDroppedByTheAdapter` holds that one.
-
-Two others were reported with it and are both fixed upstream from here:
+Nothing, as of 20 August 2026. Three gaps were found in
+[clrdbg](https://github.com/JaneySprings/clrdbg), the debugger this server drives, all three were
+reported from here, and all three are fixed upstream:
 
 - A pause issued in a freshly attached debuggee's first moment used to be answered with success without
   stopping the program, and nothing downstream could tell, because over DAP a running process and a
@@ -25,8 +18,13 @@ Two others were reported with it and are both fixed upstream from here:
   `DebugSession.Start` waits briefly for it, because the event races the response to the request that
   started the program, and `Launch_Start_NamesTheProcessItCreated` asserts the pid rather than reporting
   Inconclusive.
+- `exceptionInfo` computed `HResult` and `Source` — four function evaluations in the target, which is
+  the expensive part of that request — and then left them out of the response, along with
+  `FormattedDescription`. All three are mapped now —
+  [clrdbg#3](https://github.com/JaneySprings/clrdbg/pull/3), and
+  `ExceptionStop_ReportsHResultAndSource` asserts the two this server exposes.
 
-The submodule is pinned past both.
+The submodule is pinned past all three, so nothing in the suite reports Inconclusive any more.
 
 An **attached** process still has no exit code, and that one is waiting on nobody: the debugger reads
 the code off a process it started itself and has none for one it was merely pointed at, and the
