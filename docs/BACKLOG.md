@@ -5,23 +5,28 @@ Effort is a rough estimate: S = under an hour, M = half a day, L = a day or more
 
 ## Waiting on upstream
 
-Two gaps in [clrdbg](https://github.com/JaneySprings/clrdbg), the debugger this server drives, limit
-what it can report. Each is pinned by a test that reports Inconclusive rather than passing, so both
-start failing the day they are fixed:
+One gap is left in [clrdbg](https://github.com/JaneySprings/clrdbg), the debugger this server drives,
+and it is pinned by a test that reports Inconclusive rather than passing, so it starts failing the day
+it is fixed:
 
-- **No DAP `process` event.** The pid of a program the debugger launched never reaches the client, so
-  `start_program` reports `process_id: null`. A process this server attached to needs no event, because
-  the caller named it. `Launch_Start_NamesTheProcessItCreated` holds the place.
 - **`exceptionInfo` drops `HResult` and `Source`.** The engine reads both out of the target — four
   function evaluations, which is the expensive part of that request — and then leaves them out of the
   response, so the cost is paid and the values are lost. `get_exception_info` answers null for both.
   `ExceptionStop_HResultAndSource_AreDroppedByTheAdapter` holds that one.
 
-Both were reported alongside a third, which is fixed: a pause issued in a freshly attached debuggee's
-first moment used to be answered with success without stopping the program, and nothing downstream
-could tell, because over DAP a running process and a stopped one answer a stack trace alike. It is
-refused now, and `DebugSession.Pause` retries the refusal until the state clears —
-[clrdbg#1](https://github.com/JaneySprings/clrdbg/pull/1), merged, with the submodule pinned past it.
+Two others were reported with it and are both fixed upstream from here:
+
+- A pause issued in a freshly attached debuggee's first moment used to be answered with success without
+  stopping the program, and nothing downstream could tell, because over DAP a running process and a
+  stopped one answer a stack trace alike. It is refused now, and `DebugSession.Pause` retries the
+  refusal until the state clears — [clrdbg#1](https://github.com/JaneySprings/clrdbg/pull/1).
+- A launched program's pid never reached the client, because no DAP `process` event was sent anywhere.
+  It is sent for all three launch shapes now — [clrdbg#2](https://github.com/JaneySprings/clrdbg/pull/2).
+  `DebugSession.Start` waits briefly for it, because the event races the response to the request that
+  started the program, and `Launch_Start_NamesTheProcessItCreated` asserts the pid rather than reporting
+  Inconclusive.
+
+The submodule is pinned past both.
 
 An **attached** process still has no exit code, and that one is waiting on nobody: the debugger reads
 the code off a process it started itself and has none for one it was merely pointed at, and the

@@ -38,10 +38,6 @@ Some of these need changes in the underlying debugger rather than here.
   attached process there is nothing to report — and the protocol cannot say "unknown", only `0`,
   which would be a number this server made up. A program started with `launch_program` does report
   its real code.
-- **Report the process id of a program it launched.** `process_id` comes back `null` there, though the
-  program is started and everything else works on it. The debugger sends no DAP `process` event, which
-  is where that number would come from; a process it attached to needs no event, because the caller
-  named it.
 - **Report the `hresult` and `source` of an exception.** `get_exception_info` answers `null` for both.
   The debugger reads them out of the target and then leaves them out of the protocol response, so the
   cost is paid and the values are dropped. The type, message and stack trace all arrive.
