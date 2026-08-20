@@ -39,8 +39,17 @@ fails the session that caused it and leaves the server standing, which
 Everything else that stood in this section was a SharpDbg defect and left with the dependency —
 exception stops that could not be filtered by type or handled-ness, which `set_exception_break_mode`
 now does; stepping into code without symbols; a hit on a just-replaced breakpoint; terminating a
-running debuggee. Nothing here re-tests the last three against clrdbg, so if it shares any of them,
-they will arrive as new findings rather than as confirmations.
+running debuggee. The last three were re-tested against clrdbg on 20 August 2026 and none of them
+reproduces through this server; `UpstreamProbeTests` is what settled that and stays as the guard.
+
+The terminate one is the only one with anything left in it. clrdbg's `Terminate` has the shape the
+defect describes — no stop before the terminate, and a failure that is only logged — and a running
+**attached** process does survive it, measured in clrdbg's own fixture. It never reaches us: clrdbg's
+`Dispose` kills the OS process it started itself, and this server only ever asks to terminate a
+program it launched. The two terminate probes pin the first of those — a launched program does not
+outlive its session, running or stopped; the attached side is pinned by
+`TwoSessions_DebugTwoProcessesIndependently`. Filed upstream as
+[clrdbg#4](https://github.com/JaneySprings/clrdbg/pull/4).
 
 ### A resume that sometimes does not resume, on Windows only
 Seen twice, in two Windows integration runs of the clrdbg migration, one failure per run and a
