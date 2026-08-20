@@ -1013,9 +1013,6 @@ public sealed class DebugSessionIntegrationTests
         // get_exception_info's description sends callers to $exception for everything it does not
         // report - an inner exception, a property of their own exception type - so the pseudo-local
         // being there is part of what the tool promises rather than a detail of the evaluator
-        // Checked against the constant rather than against what get_exception_info returned, because
-        // this debugger drops HResult on the way out - see the probe below. The value is in the target
-        // either way, which is the point: $exception reaches what the response leaves behind.
         var frames = session.GetStackTrace(state.StoppedThreadId.Value);
         var reachable = await session.EvaluateExpression("$exception.HResult", frames[0].Id);
         Assert.AreEqual(unchecked((int)0x80131509).ToString(), reachable.Result,
@@ -1037,20 +1034,12 @@ public sealed class DebugSessionIntegrationTests
     }
 
     /// <summary>
-    /// HResult and Source, which the debugger computes and then does not send.
-    ///
-    /// This is not a missing feature but a dropped one, and it is worth being exact about because the
-    /// data is already paid for: the engine's ExceptionInfo reads HResult, Source, Message and
-    /// StackTrace out of the target - four function evaluations, the expensive part of this whole
-    /// operation - and the adapter's ToExceptionDetails then copies only some of them onto the DAP
-    /// response. Three lines short, upstream, on values already in hand.
-    ///
-    /// So this asserts them when they arrive and reports itself inconclusive when they do not, rather
-    /// than either failing the suite over someone else's oversight or quietly asserting null and
-    /// turning a gap into the expected behaviour. It starts passing on its own once that is fixed.
+    /// HResult and Source, the two the debugger pays function evaluations for. They used to be
+    /// computed and then dropped in the adapter's ToExceptionDetails, and this test reported itself
+    /// inconclusive for as long as that lasted; clrdbg#3 sends them, so it asserts now.
     /// </summary>
     [TestMethod]
-    public async Task ExceptionStop_HResultAndSource_AreDroppedByTheAdapter()
+    public async Task ExceptionStop_ReportsHResultAndSource()
     {
         using var debuggee = DebuggeeProcess.Start("--throw");
         using var session = CreateSession();
@@ -1062,13 +1051,6 @@ public sealed class DebugSessionIntegrationTests
         Assert.AreEqual("exception", state.StopReason);
 
         var thrown = await session.GetExceptionInfo(state.StoppedThreadId!.Value);
-
-        if (thrown.HResult is null && thrown.Source is null)
-        {
-            Assert.Inconclusive(
-                "The adapter still drops HResult and Source in ToExceptionDetails, though the engine "
-                + "fills both. Nothing to assert until that is sent.");
-        }
 
         Assert.AreEqual(unchecked((int)0x80131509), thrown.HResult, "COR_E_INVALIDOPERATION");
         Assert.AreEqual("SharpDbg.MCP.TestApp", thrown.Source,

@@ -38,9 +38,6 @@ Some of these need changes in the underlying debugger rather than here.
   attached process there is nothing to report — and the protocol cannot say "unknown", only `0`,
   which would be a number this server made up. A program started with `launch_program` does report
   its real code.
-- **Report the `hresult` and `source` of an exception.** `get_exception_info` answers `null` for both.
-  The debugger reads them out of the target and then leaves them out of the protocol response, so the
-  cost is paid and the values are dropped. The type, message and stack trace all arrive.
 - **Debug a self-contained single-file publish.** The runtime is packed inside the executable, so the
   debugger shim cannot find it to load the matching components. The attempt fails immediately with
   `CORDBG_E_DEBUG_COMPONENT_MISSING` (`0x80131C3C`), reported as
