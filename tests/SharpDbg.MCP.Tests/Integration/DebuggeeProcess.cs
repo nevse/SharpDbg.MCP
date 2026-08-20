@@ -114,6 +114,18 @@ internal sealed class DebuggeeProcess : IDisposable
     }
 
     /// <summary>
+    /// Waits for the debuggee to print again, which is the evidence that it is running. Prefer this to
+    /// counting lines in a fixed window wherever the claim is that the program runs at all: a window
+    /// measures the rate as well as the fact, and a debuggee that pays a round trip per exception can
+    /// be legitimately slow on a loaded runner without anything being wrong.
+    /// </summary>
+    public bool WaitForOutput(TimeSpan timeout)
+    {
+        var before = OutputLines;
+        return SpinUntil(() => OutputLines > before, timeout);
+    }
+
+    /// <summary>
     /// How long the debuggee took to print again, for a failure that has to say which of two things
     /// went wrong: a resume that was merely slow - a Windows runner pays a DAP round trip for every
     /// exception in some modes - or one that never arrived. Returns null when nothing was printed
