@@ -160,6 +160,9 @@ jobs:
     needs: [build-and-test, integration-tests]
     if: github.event_name == 'release'
 
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+
     # Naming any permission drops the defaults for this job, so contents has to be restated for the
     # release upload below
     permissions:
@@ -204,6 +207,14 @@ jobs:
       env:
         VERSION: ${{ steps.version.outputs.value }}
 
+    # The registry job publishes this exact file, so what the registry advertises and what nuget
+    # holds cannot drift apart
+    - name: Keep the stamped manifest for the registry job
+      uses: actions/upload-artifact@v4
+      with:
+        name: mcp-manifest
+        path: src/SharpDbg.MCP/.mcp/server.json
+
     - name: Pack
       run: >
         dotnet pack src/SharpDbg.MCP/SharpDbg.MCP.csproj
@@ -233,3 +244,71 @@ jobs:
         files: ./artifacts/*.nupkg
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The registry entry is a second publication: nothing about pushing to nuget.org updates it, and a
+  # hand publish for 0.1.0 was still advertising that version after 0.1.1 shipped. It waits for
+  # nuget to finish validating the push, so it runs after the package rather than beside it - as its
+  # own workflow it spent part of its 30-minute budget on the build ahead of it, and the 0.2.0 run
+  # was cancelled on that timeout while the README was still on its way.
+  registry:
+    name: MCP Registry
+    runs-on: ubuntu-latest
+    needs: [package]
+    timeout-minutes: 25
+
+    permissions:
+      # The registry authenticates the io.github.nevse namespace from this token. No secret is
+      # stored: the same OIDC exchange the NuGet push already relies on.
+      id-token: write
+
+    steps:
+    # No checkout: the only file this needs is the manifest the package job stamped and shipped
+    - uses: actions/download-artifact@v4
+      with:
+        name: mcp-manifest
+
+    # The registry proves we own the name by reading the mcp-name marker out of the package README on
+    # nuget.org, so there is nothing for it to verify until nuget has finished validating the push.
+    # That took several minutes for 0.1.1.
+    - name: Wait for nuget.org to serve the package README
+      env:
+        VERSION: ${{ needs.package.outputs.version }}
+      run: |
+        url="https://api.nuget.org/v3-flatcontainer/dotnetdebugger.mcp/${VERSION}/readme"
+
+        for attempt in $(seq 1 40); do
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "$url" || echo 000)
+
+          if [ "$code" = "200" ]; then
+            echo "Served after $attempt attempt(s)"
+            exit 0
+          fi
+
+          echo "attempt $attempt: HTTP $code"
+          sleep 30
+        done
+
+        echo "::error::$url never became available, so the registry cannot verify the package"
+        exit 1
+
+    # Always the latest binary on purpose: an older one fails against the current registry with
+    # "invalid audience", which reads like an authentication problem rather than a stale tool.
+    - name: Install mcp-publisher
+      run: |
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+
+        curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${os}_${arch}.tar.gz" \
+          | tar xz mcp-publisher
+
+    - name: Authenticate
+      run: ./mcp-publisher login github-oidc
+
+    - name: Publish
+      run: ./mcp-publisher publish server.json
+
+    - name: Report what the registry now holds
+      if: always()
+      run: |
+        curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.nevse" \
+          | python3 -m json.tool

@@ -4,14 +4,10 @@ name: MCP Registry
 # pushing to nuget.org updates it. Done by hand for 0.1.0, it was still reporting that version after
 # 0.1.1 shipped, which is what this exists to stop happening again.
 #
-# It is its own workflow rather than a job in ci.yml because of the wait below: on a release this
-# starts at the same moment ci.yml starts building, and it spends most of its life asleep waiting for
-# nuget.org. Keeping it out means a slow registry never holds up the package.
+# A release publishes the registry entry from ci.yml's 'registry' job, which runs after the package
+# is pushed. This is the recovery path only: a version already on nuget.org whose registry entry is
+# missing or stale - a publish that failed, or a release cut before any of this existed.
 on:
-  release:
-    types: [ published ]
-  # For a version already on nuget.org - recovering from a failure here, or catching up a release cut
-  # before this workflow existed
   workflow_dispatch:
     inputs:
       version:
@@ -34,20 +30,13 @@ jobs:
     steps:
     - uses: actions/checkout@v7
 
-    # Read from the tag on a release, and from the input when catching up by hand. Both come in
-    # through the environment rather than being interpolated into the script, so neither can inject.
+    # Through the environment rather than interpolated into the script, so the input cannot inject.
     - name: Resolve the version
       id: version
       env:
-        EVENT: ${{ github.event_name }}
-        TAG: ${{ github.ref_name }}
         INPUT_VERSION: ${{ inputs.version }}
       run: |
-        if [ "$EVENT" = "release" ]; then
-          value="${TAG#v}"
-        else
-          value="$INPUT_VERSION"
-        fi
+        value="$INPUT_VERSION"
 
         case "$value" in
           '' | *[!0-9A-Za-z.+-]* )
